@@ -1,3 +1,25 @@
 spring:
   application:
     name: payment-service
+  datasource:
+    url: jdbc:postgresql://localhost:55432/payflow
+    username: payflow
+    password: payflow
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+    open-in-view: false
+
+    properties:
+      hibernate:
+        format_sql: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: 8080
