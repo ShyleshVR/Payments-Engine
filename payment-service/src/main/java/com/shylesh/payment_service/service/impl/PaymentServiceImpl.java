@@ -8,6 +8,8 @@ import com.shylesh.payment_service.mapper.PaymentMapper;
 import com.shylesh.payment_service.repository.PaymentRepository;
 import com.shylesh.payment_service.service.PaymentService;
 import com.shylesh.payment_service.common.identifier.IdGenerator;
+import com.shylesh.payment_service.common.identifier.IdentifierService;
+import com.shylesh.payment_service.exception.PaymentNotFoundException;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -22,6 +24,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final PaymentRepository paymentRepository;
     private final PaymentMapper paymentMapper;
     private final IdGenerator idGenerator;
+    private final IdentifierService identifierService;
 
     @Override
     public PaymentResponse createPayment(CreatePaymentRequest request) {
@@ -44,5 +47,58 @@ public class PaymentServiceImpl implements PaymentService {
         Payment savedPayment = paymentRepository.save(payment);
 
         return paymentMapper.toResponse(savedPayment);
+    }
+
+    @Override
+    public PaymentResponse getPayment(UUID paymentId) {
+
+        Payment payment = paymentRepository.findById(paymentId)
+                .orElseThrow(() -> new PaymentNotFoundException(paymentId));
+
+        return paymentMapper.toResponse(payment);
+    }
+
+    @Override
+    public PaymentResponse processPayment(UUID id) {
+        Payment payment = paymentRepository.findById(id)
+                .orElseThrow(() -> new PaymentNotFoundException(id));
+
+        payment.markProcessing();
+        Payment updatedPayment = paymentRepository.save(payment);
+
+        return paymentMapper.toResponse(updatedPayment);
+    }
+
+    @Override
+    public PaymentResponse completePayment(UUID id) {
+        Payment payment = paymentRepository.findById(id)
+                .orElseThrow(() -> new PaymentNotFoundException(id));
+
+        payment.markSuccessful();
+        Payment updatedPayment = paymentRepository.save(payment);
+
+        return paymentMapper.toResponse(updatedPayment);
+    }
+
+    @Override
+    public PaymentResponse failPayment(UUID id) {
+        Payment payment = paymentRepository.findById(id)
+                .orElseThrow(() -> new PaymentNotFoundException(id));
+
+        payment.markFailed();
+        Payment updatedPayment = paymentRepository.save(payment);
+
+        return paymentMapper.toResponse(updatedPayment);
+    }
+
+    @Override
+    public PaymentResponse cancelPayment(UUID id) {
+        Payment payment = paymentRepository.findById(id)
+                .orElseThrow(() -> new PaymentNotFoundException(id));
+
+        payment.cancel();
+        Payment updatedPayment = paymentRepository.save(payment);
+
+        return paymentMapper.toResponse(updatedPayment);
     }
 }

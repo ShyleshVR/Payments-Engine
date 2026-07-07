@@ -43,4 +43,24 @@ public class Payment {
 
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
+
+    public void markProcessing() {
+        this.status = PaymentStatus.PROCESSING;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void markSuccessful() {
+        this.status = PaymentStatus.SUCCESS;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void markFailed() {
+        this.status = PaymentStatus.FAILED;
+        this.updatedAt = LocalDateTime.now();
+    }
+
+    public void cancel() {
+        this.status = PaymentStatus.CANCELLED;
+        this.updatedAt = LocalDateTime.now();
+    }
 }

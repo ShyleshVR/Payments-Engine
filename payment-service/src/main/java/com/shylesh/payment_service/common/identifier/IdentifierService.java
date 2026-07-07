@@ -7,4 +7,6 @@ public interface IdentifierService {
 
     String paymentId(UUID id);
 
+    UUID parsePaymentId(String paymentId);
+
 }
