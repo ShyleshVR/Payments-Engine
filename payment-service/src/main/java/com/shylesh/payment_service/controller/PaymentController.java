@@ -24,12 +24,12 @@ public class PaymentController {
     private final IdentifierService identifierService;
 
     @PostMapping
-    public ResponseEntity<PaymentResponse> createPayment(
+    public ResponseEntity<PaymentResponse> createPayment(@RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody CreatePaymentRequest request) {
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)
-                .body(paymentService.createPayment(request));
+                .body(paymentService.createPayment(idempotencyKey, request));
     }
 
     @GetMapping("/{paymentId}")
@@ -71,5 +71,13 @@ public class PaymentController {
         UUID id = identifierService.parsePaymentId(paymentId);
 
         return ResponseEntity.ok(paymentService.cancelPayment(id));
+    }
+
+    @PostMapping("/{paymentId}/refund")
+    public ResponseEntity<PaymentResponse> refundPayment(@PathVariable String paymentId) {
+        
+        UUID id = identifierService.parsePaymentId(paymentId);
+
+        return ResponseEntity.ok(paymentService.refundPayment(id));
     }
 }

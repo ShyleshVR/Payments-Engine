@@ -7,7 +7,7 @@ import java.util.UUID;
 
 public interface PaymentService {
 
-    PaymentResponse createPayment(CreatePaymentRequest request);
+    PaymentResponse createPayment(String idempotencyKey, CreatePaymentRequest request);
 
     PaymentResponse getPayment(UUID paymentId);
 
@@ -18,5 +18,7 @@ public interface PaymentService {
     PaymentResponse failPayment(UUID id);
 
     PaymentResponse cancelPayment(UUID id);
+
+    PaymentResponse refundPayment(UUID id);
 
 }
