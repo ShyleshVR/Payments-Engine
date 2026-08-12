@@ -11,6 +11,7 @@ import com.shylesh.payment_service.service.PaymentService;
 import com.shylesh.payment_service.common.identifier.IdGenerator;
 import com.shylesh.payment_service.common.identifier.IdentifierService;
 import com.shylesh.payment_service.exception.PaymentNotFoundException;
+import com.shylesh.payment_service.event.PaymentEventPublisher;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -27,6 +28,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final PaymentMapper paymentMapper;
     private final IdGenerator idGenerator;
     private final IdempotencyService  idempotencyService;
+    private final PaymentEventPublisher paymentEventPublisher;
 
     @Override
     public PaymentResponse createPayment(String idempotencyKey, CreatePaymentRequest request) {
@@ -61,6 +63,8 @@ public class PaymentServiceImpl implements PaymentService {
 
         Payment savedPayment = paymentRepository.save(payment);
         idempotencyService.put(idempotencyKey, paymentId.toString());
+
+        paymentEventPublisher.publishPaymentCreated(payment);
 
         return paymentMapper.toResponse(savedPayment);
     }
