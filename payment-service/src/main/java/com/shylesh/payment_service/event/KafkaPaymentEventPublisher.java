@@ -1,35 +1,29 @@
 package com.shylesh.payment_service.event;
 
-import com.shylesh.payment_service.entity.Payment;
-
+import com.shylesh.payment_service.common.outbox.OutboxEvent;
 import lombok.RequiredArgsConstructor;
+
+import java.util.concurrent.CompletableFuture;
+
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Service;
+
 
 @Service
 @RequiredArgsConstructor
-public class KafkaPaymentEventPublisher
-        implements PaymentEventPublisher {
+public class KafkaPaymentEventPublisher implements PaymentEventPublisher {
 
-    private final KafkaTemplate<String, PaymentCreatedEvent> kafkaTemplate;
+    private final KafkaTemplate<String, String> kafkaTemplate;
 
     @Override
-    public void publishPaymentCreated(Payment payment) {
+    public CompletableFuture<SendResult<String, String>> publish(
+            OutboxEvent outboxEvent) {
 
-        PaymentCreatedEvent event =
-                PaymentCreatedEvent.builder()
-                        .paymentId(payment.getId())
-                        .amount(payment.getAmount())
-                        .currency(payment.getCurrency())
-                        .merchantId(payment.getMerchantId())
-                        .customerId(payment.getCustomerId())
-                        .createdAt(payment.getCreatedAt())
-                        .build();
-
-        kafkaTemplate.send(
+        return kafkaTemplate.send(
                 Topics.PAYMENT_CREATED,
-                payment.getId().toString(),
-                event
+                outboxEvent.getAggregateId().toString(),
+                outboxEvent.getPayload()
         );
     }
 }

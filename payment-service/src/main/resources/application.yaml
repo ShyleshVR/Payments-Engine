@@ -5,7 +5,7 @@ spring:
     bootstrap-servers: localhost:9092
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
   datasource:
     url: jdbc:postgresql://localhost:55432/payflow
     username: payflow
@@ -29,6 +29,11 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+
+logging:
+  level:
+    org.apache.kafka.clients.NetworkClient: WARN
+    org.apache.kafka.clients.consumer.internals.ConsumerCoordinator: WARN
 
 server:
   port: 8080

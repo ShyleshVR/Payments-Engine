@@ -1,9 +1,13 @@
 package com.shylesh.payment_service.event;
 
-import com.shylesh.payment_service.entity.Payment;
+import com.shylesh.payment_service.common.outbox.OutboxEvent;
+
+import org.springframework.kafka.support.SendResult;
+import java.util.concurrent.CompletableFuture;
 
 public interface PaymentEventPublisher {
 
-    void publishPaymentCreated(Payment payment);
-
+    CompletableFuture<SendResult<String, String>> publish(
+            OutboxEvent outboxEvent
+    );
 }

@@ -9,13 +9,17 @@ import com.shylesh.payment_service.repository.PaymentRepository;
 import com.shylesh.payment_service.service.IdempotencyService;
 import com.shylesh.payment_service.service.PaymentService;
 import com.shylesh.payment_service.common.identifier.IdGenerator;
-import com.shylesh.payment_service.common.identifier.IdentifierService;
+import com.shylesh.payment_service.common.outbox.OutboxEvent;
+import com.shylesh.payment_service.common.outbox.OutboxEventFactory;
+import com.shylesh.payment_service.common.outbox.OutboxEventRepository;
 import com.shylesh.payment_service.exception.PaymentNotFoundException;
-import com.shylesh.payment_service.event.PaymentEventPublisher;
+import com.shylesh.payment_service.event.PaymentCreatedEvent;
+import com.shylesh.payment_service.event.PaymentEventFactory;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import java.time.LocalDateTime;
+import org.springframework.transaction.annotation.Transactional;
+
 import java.util.Optional;
 import java.util.UUID;
 
@@ -28,8 +32,11 @@ public class PaymentServiceImpl implements PaymentService {
     private final PaymentMapper paymentMapper;
     private final IdGenerator idGenerator;
     private final IdempotencyService  idempotencyService;
-    private final PaymentEventPublisher paymentEventPublisher;
+    private final OutboxEventRepository outboxEventRepository;
+    private final OutboxEventFactory outboxEventFactory;
+    private final PaymentEventFactory paymentEventFactory;
 
+    @Transactional
     @Override
     public PaymentResponse createPayment(String idempotencyKey, CreatePaymentRequest request) {
 
@@ -61,10 +68,15 @@ public class PaymentServiceImpl implements PaymentService {
                 .idempotencyKey(idempotencyKey)
                 .build();
 
-        Payment savedPayment = paymentRepository.save(payment);
+        Payment savedPayment = paymentRepository.saveAndFlush(payment);
         idempotencyService.put(idempotencyKey, paymentId.toString());
 
-        paymentEventPublisher.publishPaymentCreated(payment);
+        PaymentCreatedEvent event = paymentEventFactory.create(savedPayment);
+
+        OutboxEvent outboxEvent =
+                outboxEventFactory.createPaymentCreatedEvent(event);
+
+        outboxEventRepository.save(outboxEvent);
 
         return paymentMapper.toResponse(savedPayment);
     }
