@@ -7,7 +7,7 @@ import java.util.concurrent.CompletableFuture;
 
 public interface PaymentEventPublisher {
 
-    CompletableFuture<SendResult<String, String>> publish(
+    CompletableFuture<SendResult<String, Object>> publish(
             OutboxEvent outboxEvent
     );
 }

@@ -14,6 +14,11 @@ import java.util.UUID;
 @Builder
 public class OutboxEvent {
 
+    /**
+     * Unique identifier of this event.
+     *
+     * This ID is propagated as eventId to Kafka consumers.
+     */
     @Id
     @Column(nullable = false, updatable = false)
     private UUID id;
