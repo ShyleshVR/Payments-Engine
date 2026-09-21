@@ -1,6 +1,5 @@
 package com.shylesh.notification_service.channel;
 
-import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
@@ -11,8 +10,6 @@ public record NotificationContext(
         UUID notificationId,
         UUID paymentId,
         UUID customerId,
-        String eventType,
-        BigDecimal amount,
-        String currency
+        String eventType
 ) {
 }

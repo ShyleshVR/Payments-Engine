@@ -7,6 +7,8 @@ import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
+import com.shylesh.notification_service.exception.InvalidNotificationStateException;
+
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -60,4 +62,34 @@ public class Notification {
     @LastModifiedDate
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
+
+    public void markSent(int attemptCount) {
+        ensureDeliverable();
+        this.status = NotificationStatus.SENT;
+        this.attemptCount = attemptCount;
+        this.nextAttemptAt = null;
+        this.lastError = null;
+    }
+
+    public void markRetrying(int attemptCount, LocalDateTime nextAttemptAt, String error) {
+        ensureDeliverable();
+        this.status = NotificationStatus.RETRYING;
+        this.attemptCount = attemptCount;
+        this.nextAttemptAt = nextAttemptAt;
+        this.lastError = error;
+    }
+
+    public void markFailed(int attemptCount, String error) {
+        ensureDeliverable();
+        this.status = NotificationStatus.FAILED;
+        this.attemptCount = attemptCount;
+        this.nextAttemptAt = null;
+        this.lastError = error;
+    }
+
+    private void ensureDeliverable() {
+        if (status != NotificationStatus.PENDING && status != NotificationStatus.RETRYING) {
+            throw new InvalidNotificationStateException(id, status);
+        }
+    }
 }
