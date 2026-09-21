@@ -13,12 +13,16 @@ import com.shylesh.notification_service.persistance.NotificationRepository;
 import com.shylesh.notification_service.retry.NotificationRetryPolicy;
 import com.shylesh.notification_service.service.NotificationDeliveryService;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -32,6 +36,7 @@ public class NotificationDeliveryServiceImpl implements NotificationDeliveryServ
     private final NotificationChannelRegistry channelRegistry;
     private final NotificationRetryPolicy retryPolicy;
     private final NotificationDeadLetterPublisher deadLetterPublisher;
+    private final MeterRegistry meterRegistry;
 
     @Override
     @Transactional
@@ -57,6 +62,27 @@ public class NotificationDeliveryServiceImpl implements NotificationDeliveryServ
             notification.markSent(attemptNumber);
             notificationRepository.save(notification);
 
+            Counter.builder("notifications.sent")
+                    .tag("channel", notification.getChannel().name())
+                    .tag("eventType", notification.getEventType())
+                    .register(meterRegistry)
+                    .increment();
+
+            Timer.builder("notifications.delivery.latency")
+                    .tag("channel", notification.getChannel().name())
+                    .serviceLevelObjectives(
+                            Duration.ofMillis(100),
+                            Duration.ofSeconds(1),
+                            Duration.ofSeconds(5),
+                            Duration.ofSeconds(10),
+                            Duration.ofSeconds(30),
+                            Duration.ofMinutes(1),
+                            Duration.ofMinutes(5),
+                            Duration.ofMinutes(10)
+                    )
+                    .register(meterRegistry)
+                    .record(Duration.between(notification.getCreatedAt(), LocalDateTime.now()));
+
             log.info(
                     "Notification delivered. notificationId={}, channel={}, attempt={}",
                     notification.getId(),
@@ -71,6 +97,12 @@ public class NotificationDeliveryServiceImpl implements NotificationDeliveryServ
                 LocalDateTime nextAttemptAt = retryPolicy.nextAttemptAt(attemptNumber);
                 notification.markRetrying(attemptNumber, nextAttemptAt, e.getMessage());
                 notificationRepository.save(notification);
+
+                Counter.builder("notifications.retried")
+                        .tag("channel", notification.getChannel().name())
+                        .tag("eventType", notification.getEventType())
+                        .register(meterRegistry)
+                        .increment();
 
                 log.warn(
                         "Notification delivery failed, will retry. notificationId={}, attempt={}, nextAttemptAt={}, error={}",

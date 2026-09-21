@@ -7,6 +7,9 @@ import com.shylesh.notification_service.dlt.NotificationDeadLetterPublisher;
 import com.shylesh.notification_service.persistance.*;
 import com.shylesh.notification_service.retry.NotificationRetryPolicy;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -26,6 +29,7 @@ class NotificationDeliveryServiceImplTest {
     private NotificationRetryPolicy retryPolicy;
     private NotificationDeadLetterPublisher deadLetterPublisher;
     private NotificationChannel emailChannel;
+    private MeterRegistry meterRegistry;
     private NotificationDeliveryServiceImpl service;
 
     private Notification notification;
@@ -38,13 +42,15 @@ class NotificationDeliveryServiceImplTest {
         retryPolicy = mock(NotificationRetryPolicy.class);
         deadLetterPublisher = mock(NotificationDeadLetterPublisher.class);
         emailChannel = mock(NotificationChannel.class);
+        meterRegistry = new SimpleMeterRegistry();
 
         service = new NotificationDeliveryServiceImpl(
                 notificationRepository,
                 deliveryAttemptRepository,
                 channelRegistry,
                 retryPolicy,
-                deadLetterPublisher
+                deadLetterPublisher,
+                meterRegistry
         );
 
         notification = Notification.builder()
@@ -56,6 +62,7 @@ class NotificationDeliveryServiceImplTest {
                 .channel(NotificationChannelType.EMAIL)
                 .status(NotificationStatus.PENDING)
                 .attemptCount(0)
+                .createdAt(LocalDateTime.now())
                 .build();
 
         when(notificationRepository.findById(notification.getId())).thenReturn(java.util.Optional.of(notification));

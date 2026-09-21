@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shylesh.notification_service.persistance.Notification;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -19,6 +21,7 @@ public class NotificationDeadLetterPublisher {
 
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry;
 
     public void publish(Notification notification, String lastError) {
         NotificationDeadLetterEvent event = new NotificationDeadLetterEvent(
@@ -40,6 +43,12 @@ public class NotificationDeadLetterPublisher {
                     notification.getPaymentId().toString(),
                     payload
             );
+
+            Counter.builder("notifications.dlt")
+                    .tag("channel", notification.getChannel().name())
+                    .tag("eventType", notification.getEventType())
+                    .register(meterRegistry)
+                    .increment();
         } catch (JsonProcessingException e) {
             log.error(
                     "Failed to serialize dead letter event for notification {}: {}",

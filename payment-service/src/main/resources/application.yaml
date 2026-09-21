@@ -6,6 +6,8 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    template:
+      observation-enabled: true
   datasource:
     url: jdbc:postgresql://localhost:55432/payflow
     username: payflow
@@ -29,6 +31,21 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://localhost:4318/v1/traces
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
 
 logging:
   level:

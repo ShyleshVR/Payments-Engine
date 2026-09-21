@@ -16,6 +16,9 @@ import com.shylesh.payment_service.exception.PaymentNotFoundException;
 import com.shylesh.payment_service.event.PaymentCreatedEvent;
 import com.shylesh.payment_service.event.PaymentEventFactory;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,6 +38,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final OutboxEventRepository outboxEventRepository;
     private final OutboxEventFactory outboxEventFactory;
     private final PaymentEventFactory paymentEventFactory;
+    private final MeterRegistry meterRegistry;
 
     @Transactional
     @Override
@@ -78,7 +82,27 @@ public class PaymentServiceImpl implements PaymentService {
 
         outboxEventRepository.save(outboxEvent);
 
+        Counter.builder("payments.created")
+                .tag("currency", request.getCurrency())
+                .register(meterRegistry)
+                .increment();
+
+        DistributionSummary.builder("payments.amount")
+                .tag("currency", request.getCurrency())
+                .serviceLevelObjectives(10, 50, 100, 500, 1000, 5000, 10000, 50000)
+                .register(meterRegistry)
+                .record(request.getAmount().doubleValue());
+
+        recordStatusTransition(PaymentStatus.CREATED);
+
         return paymentMapper.toResponse(savedPayment);
+    }
+
+    private void recordStatusTransition(PaymentStatus status) {
+        Counter.builder("payments.status.transitions")
+                .tag("status", status.name())
+                .register(meterRegistry)
+                .increment();
     }
 
     @Override
@@ -97,6 +121,7 @@ public class PaymentServiceImpl implements PaymentService {
 
         payment.markProcessing();
         Payment updatedPayment = paymentRepository.save(payment);
+        recordStatusTransition(updatedPayment.getStatus());
 
         return paymentMapper.toResponse(updatedPayment);
     }
@@ -108,6 +133,7 @@ public class PaymentServiceImpl implements PaymentService {
 
         payment.markSuccessful();
         Payment updatedPayment = paymentRepository.save(payment);
+        recordStatusTransition(updatedPayment.getStatus());
 
         return paymentMapper.toResponse(updatedPayment);
     }
@@ -119,6 +145,7 @@ public class PaymentServiceImpl implements PaymentService {
 
         payment.markFailed();
         Payment updatedPayment = paymentRepository.save(payment);
+        recordStatusTransition(updatedPayment.getStatus());
 
         return paymentMapper.toResponse(updatedPayment);
     }
@@ -130,6 +157,7 @@ public class PaymentServiceImpl implements PaymentService {
 
         payment.markCancelled();
         Payment updatedPayment = paymentRepository.save(payment);
+        recordStatusTransition(updatedPayment.getStatus());
 
         return paymentMapper.toResponse(updatedPayment);
     }
@@ -141,6 +169,7 @@ public class PaymentServiceImpl implements PaymentService {
 
         payment.markRefunded();
         Payment updatedPayment = paymentRepository.save(payment);
+        recordStatusTransition(updatedPayment.getStatus());
 
         return paymentMapper.toResponse(updatedPayment);
     }
