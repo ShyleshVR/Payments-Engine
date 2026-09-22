@@ -126,6 +126,7 @@ public class PaymentServiceImpl implements PaymentService {
         return paymentMapper.toResponse(updatedPayment);
     }
 
+    @Transactional
     @Override
     public PaymentResponse completePayment(UUID id) {
         Payment payment = paymentRepository.findById(id)
@@ -134,6 +135,9 @@ public class PaymentServiceImpl implements PaymentService {
         payment.markSuccessful();
         Payment updatedPayment = paymentRepository.save(payment);
         recordStatusTransition(updatedPayment.getStatus());
+
+        PaymentCreatedEvent event = paymentEventFactory.create(updatedPayment);
+        outboxEventRepository.save(outboxEventFactory.createPaymentCompletedEvent(event));
 
         return paymentMapper.toResponse(updatedPayment);
     }
@@ -162,6 +166,7 @@ public class PaymentServiceImpl implements PaymentService {
         return paymentMapper.toResponse(updatedPayment);
     }
 
+    @Transactional
     @Override
     public PaymentResponse refundPayment(UUID id) {
         Payment payment = paymentRepository.findById(id)
@@ -170,6 +175,9 @@ public class PaymentServiceImpl implements PaymentService {
         payment.markRefunded();
         Payment updatedPayment = paymentRepository.save(payment);
         recordStatusTransition(updatedPayment.getStatus());
+
+        PaymentCreatedEvent event = paymentEventFactory.create(updatedPayment);
+        outboxEventRepository.save(outboxEventFactory.createPaymentRefundedEvent(event));
 
         return paymentMapper.toResponse(updatedPayment);
     }

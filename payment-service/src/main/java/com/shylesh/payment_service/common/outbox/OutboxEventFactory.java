@@ -14,19 +14,28 @@ import java.util.UUID;
 public class OutboxEventFactory {
 
     private static final String AGGREGATE_TYPE = "PAYMENT";
-    private static final String EVENT_TYPE = "PAYMENT_CREATED";
 
     private final ObjectMapper objectMapper;
 
-    public OutboxEvent createPaymentCreatedEvent(
-            PaymentCreatedEvent event
-    ) {
+    public OutboxEvent createPaymentCreatedEvent(PaymentCreatedEvent event) {
+        return build(event, "PAYMENT_CREATED");
+    }
+
+    public OutboxEvent createPaymentCompletedEvent(PaymentCreatedEvent event) {
+        return build(event, "PAYMENT_COMPLETED");
+    }
+
+    public OutboxEvent createPaymentRefundedEvent(PaymentCreatedEvent event) {
+        return build(event, "PAYMENT_REFUNDED");
+    }
+
+    private OutboxEvent build(PaymentCreatedEvent event, String eventType) {
         try {
             return OutboxEvent.builder()
                     .id(UUID.randomUUID())
                     .aggregateId(event.getPaymentId())
                     .aggregateType(AGGREGATE_TYPE)
-                    .eventType(EVENT_TYPE)
+                    .eventType(eventType)
                     .payload(objectMapper.writeValueAsString(event))
                     .status(OutboxEventStatus.PENDING)
                     .createdAt(LocalDateTime.now())
@@ -34,7 +43,7 @@ public class OutboxEventFactory {
 
         } catch (JsonProcessingException e) {
             throw new IllegalStateException(
-                    "Failed to serialize payment created event", e
+                    "Failed to serialize " + eventType + " event", e
             );
         }
     }

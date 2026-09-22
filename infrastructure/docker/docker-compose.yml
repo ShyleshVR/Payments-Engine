@@ -34,6 +34,24 @@ services:
     volumes:
       - postgres_notification_data:/var/lib/postgresql/data
 
+  postgres-ledger:
+    image: postgres:17
+    container_name: ledger-postgres
+
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ledger_db
+      POSTGRES_USER: ledger_user
+      POSTGRES_PASSWORD: ledger_password
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "55433:5432"
+
+    volumes:
+      - postgres_ledger_data:/var/lib/postgresql/data
+
   redis:
     image: redis:7-alpine
     container_name: payflow-redis
@@ -109,4 +127,5 @@ services:
 volumes:
   postgres_data:
   postgres_notification_data:
+  postgres_ledger_data:
   grafana_data:
