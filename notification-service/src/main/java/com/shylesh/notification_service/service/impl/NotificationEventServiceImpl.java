@@ -45,6 +45,13 @@ public class NotificationEventServiceImpl implements NotificationEventService {
             return;
         }
 
+        if (envelope.getData() == null || envelope.getData().isNull()) {
+            throw new IllegalArgumentException(
+                    "Event envelope missing data payload. eventId=" + envelope.getEventId()
+                            + ", eventType=" + envelope.getEventType()
+            );
+        }
+
         PaymentEventData data = objectMapper.convertValue(envelope.getData(), PaymentEventData.class);
 
         List<NotificationChannelType> channels = rulesEngine.resolveChannels(envelope.getEventType());

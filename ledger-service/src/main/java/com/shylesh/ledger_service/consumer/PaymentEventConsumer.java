@@ -18,10 +18,7 @@ public class PaymentEventConsumer {
     private final ObjectMapper objectMapper;
     private final LedgerPostingService ledgerPostingService;
 
-    @KafkaListener(
-            topics = "payment-created",
-            groupId = "ledger-service"
-    )
+    @KafkaListener(topics = "payment-created")
     public void consume(String message) {
 
         EventEnvelope envelope;

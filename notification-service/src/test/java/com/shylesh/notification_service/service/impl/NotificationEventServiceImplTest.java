@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -103,5 +104,42 @@ class NotificationEventServiceImplTest {
 
         verifyNoInteractions(notificationRepository);
         verify(processedEventRepository, times(1)).save(any());
+    }
+
+    @Test
+    void rejectsEventWithMissingDataPayloadInsteadOfThrowingNpe() {
+        UUID eventId = UUID.randomUUID();
+
+        when(processedEventRepository.existsById(eventId)).thenReturn(false);
+
+        EventEnvelope envelopeWithoutData = new EventEnvelope(eventId, "PAYMENT_CREATED", LocalDateTime.now(), null);
+
+        assertThatThrownBy(() -> service.handle(envelopeWithoutData))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(eventId.toString());
+
+        verifyNoInteractions(notificationRepository, rulesEngine);
+        verify(processedEventRepository, never()).save(any());
+    }
+
+    @Test
+    void rejectsEventWithJsonNullDataPayloadInsteadOfThrowingNpe() throws Exception {
+        UUID eventId = UUID.randomUUID();
+
+        when(processedEventRepository.existsById(eventId)).thenReturn(false);
+
+        // Deserializing the wire format is what actually produces a NullNode for "data": null,
+        // as opposed to a Java null reference — this is the shape a real malformed Kafka message takes.
+        String json = "{\"eventId\":\"" + eventId + "\",\"eventType\":\"PAYMENT_CREATED\","
+                + "\"occurredAt\":\"2026-01-01T00:00:00\",\"data\":null}";
+        EventEnvelope envelopeWithNullNode = new ObjectMapper().findAndRegisterModules()
+                .readValue(json, EventEnvelope.class);
+
+        assertThatThrownBy(() -> service.handle(envelopeWithNullNode))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(eventId.toString());
+
+        verifyNoInteractions(notificationRepository, rulesEngine);
+        verify(processedEventRepository, never()).save(any());
     }
 }

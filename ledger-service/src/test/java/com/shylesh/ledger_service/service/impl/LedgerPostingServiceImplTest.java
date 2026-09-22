@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -74,7 +75,7 @@ class LedgerPostingServiceImplTest {
 
         when(transactionRepository.save(any(LedgerTransaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
-        when(entryRepository.save(any(LedgerEntry.class)))
+        when(entryRepository.saveAll(anyList()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
     }
 
@@ -107,9 +108,10 @@ class LedgerPostingServiceImplTest {
         assertThat(txCaptor.getValue().getPaymentId()).isEqualTo(paymentId);
         assertThat(txCaptor.getValue().getEventId()).isEqualTo(eventId);
 
-        ArgumentCaptor<LedgerEntry> entryCaptor = ArgumentCaptor.forClass(LedgerEntry.class);
-        verify(entryRepository, times(2)).save(entryCaptor.capture());
-        List<LedgerEntry> entries = entryCaptor.getAllValues();
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<LedgerEntry>> entryCaptor = ArgumentCaptor.forClass(List.class);
+        verify(entryRepository).saveAll(entryCaptor.capture());
+        List<LedgerEntry> entries = entryCaptor.getValue();
 
         LedgerEntry debit = entries.stream().filter(e -> e.getDirection() == LedgerDirection.DEBIT).findFirst().orElseThrow();
         LedgerEntry credit = entries.stream().filter(e -> e.getDirection() == LedgerDirection.CREDIT).findFirst().orElseThrow();
@@ -136,9 +138,10 @@ class LedgerPostingServiceImplTest {
         verify(transactionRepository).save(txCaptor.capture());
         assertThat(txCaptor.getValue().getType()).isEqualTo(LedgerTransactionType.REFUND);
 
-        ArgumentCaptor<LedgerEntry> entryCaptor = ArgumentCaptor.forClass(LedgerEntry.class);
-        verify(entryRepository, times(2)).save(entryCaptor.capture());
-        List<LedgerEntry> entries = entryCaptor.getAllValues();
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<LedgerEntry>> entryCaptor = ArgumentCaptor.forClass(List.class);
+        verify(entryRepository).saveAll(entryCaptor.capture());
+        List<LedgerEntry> entries = entryCaptor.getValue();
 
         LedgerEntry debit = entries.stream().filter(e -> e.getDirection() == LedgerDirection.DEBIT).findFirst().orElseThrow();
         LedgerEntry credit = entries.stream().filter(e -> e.getDirection() == LedgerDirection.CREDIT).findFirst().orElseThrow();
@@ -169,5 +172,21 @@ class LedgerPostingServiceImplTest {
 
         verifyNoInteractions(transactionRepository, entryRepository, accountResolver);
         verify(processedEventRepository).save(any());
+    }
+
+    @Test
+    void rejectsEventWithMissingDataPayloadInsteadOfThrowingNpe() {
+        UUID eventId = UUID.randomUUID();
+
+        when(processedEventRepository.existsById(eventId)).thenReturn(false);
+
+        EventEnvelope envelopeWithoutData = new EventEnvelope(eventId, "PAYMENT_COMPLETED", LocalDateTime.now(), null);
+
+        assertThatThrownBy(() -> service.handle(envelopeWithoutData))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(eventId.toString());
+
+        verifyNoInteractions(transactionRepository, entryRepository, accountResolver);
+        verify(processedEventRepository, never()).save(any());
     }
 }

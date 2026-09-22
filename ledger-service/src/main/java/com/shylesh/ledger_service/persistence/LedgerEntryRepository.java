@@ -12,6 +12,8 @@ public interface LedgerEntryRepository extends JpaRepository<LedgerEntry, UUID> 
 
     List<LedgerEntry> findByTransactionIdOrderByCreatedAtAsc(UUID transactionId);
 
+    List<LedgerEntry> findByTransactionIdInOrderByCreatedAtAsc(List<UUID> transactionIds);
+
     /**
      * Balance is derived from the entry log, never stored: SUM(credits) - SUM(debits).
      * A credit-only account (e.g. a merchant payable) reads as a positive "amount owed";

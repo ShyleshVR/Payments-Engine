@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -47,6 +48,13 @@ public class LedgerPostingServiceImpl implements LedgerPostingService {
                     envelope.getEventType()
             );
             return;
+        }
+
+        if (envelope.getData() == null) {
+            throw new IllegalArgumentException(
+                    "Event envelope missing data payload. eventId=" + envelope.getEventId()
+                            + ", eventType=" + envelope.getEventType()
+            );
         }
 
         PaymentEventData data = objectMapper.convertValue(envelope.getData(), PaymentEventData.class);
@@ -115,7 +123,7 @@ public class LedgerPostingServiceImpl implements LedgerPostingService {
                         .build()
         );
 
-        entryRepository.save(
+        entryRepository.saveAll(List.of(
                 LedgerEntry.builder()
                         .id(UUID.randomUUID())
                         .transactionId(transaction.getId())
@@ -124,10 +132,7 @@ public class LedgerPostingServiceImpl implements LedgerPostingService {
                         .amount(amount)
                         .currency(currency)
                         .createdAt(now)
-                        .build()
-        );
-
-        entryRepository.save(
+                        .build(),
                 LedgerEntry.builder()
                         .id(UUID.randomUUID())
                         .transactionId(transaction.getId())
@@ -137,7 +142,7 @@ public class LedgerPostingServiceImpl implements LedgerPostingService {
                         .currency(currency)
                         .createdAt(now)
                         .build()
-        );
+        ));
 
         Counter.builder("ledger.transactions.posted")
                 .tag("type", type.name())

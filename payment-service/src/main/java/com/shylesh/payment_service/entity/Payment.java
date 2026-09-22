@@ -56,6 +56,10 @@ public class Payment {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    @Version
+    @Column(nullable = false)
+    private Long version;
+
     public void markProcessing() {
         transitionTo(PaymentStatus.CREATED, PaymentStatus.PROCESSING);
     }
