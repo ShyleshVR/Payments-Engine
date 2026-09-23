@@ -13,7 +13,7 @@ import org.springframework.web.client.RestClient;
 import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.fail;
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.*;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
@@ -52,9 +52,12 @@ class WebhookHttpClientTest {
     void throwsWithResponseCodeOnNon2xx() {
         server.expect(requestTo(URL)).andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
 
-        assertThatThrownBy(() -> client.post(URL, "sha256=abc", BODY))
-                .isInstanceOf(WebhookDeliveryException.class)
-                .satisfies(e -> assertThat(((WebhookDeliveryException) e).getResponseCode()).isEqualTo(503))
-                .hasMessageContaining("503");
+        try {
+            client.post(URL, "sha256=abc", BODY);
+            fail("Expected WebhookDeliveryException for HTTP 503");
+        } catch (WebhookDeliveryException e) {
+            assertThat(e.getResponseCode()).isEqualTo(503);
+            assertThat(e.getMessage()).contains("503");
+        }
     }
 }
