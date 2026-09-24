@@ -1,29 +1,38 @@
 package com.shylesh.webhook_service.dlt;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shylesh.webhook_service.persistence.WebhookDelivery;
 
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDateTime;
+import java.time.Duration;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
+/**
+ * Publishes one dead letter and waits for Kafka to acknowledge it. Never called inside a
+ * database transaction — WebhookDeadLetterRelay calls it for FAILED deliveries that are
+ * already committed, so a Kafka outage cannot roll back delivery state.
+ */
 @Component
-@RequiredArgsConstructor
-@Slf4j
 public class WebhookDeadLetterPublisher {
 
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
-    private final MeterRegistry meterRegistry;
+    private final Duration sendTimeout;
 
-    public void publish(WebhookDelivery delivery, String lastError) {
+    public WebhookDeadLetterPublisher(
+            KafkaTemplate<String, String> kafkaTemplate,
+            ObjectMapper objectMapper,
+            @Value("${webhook.dlt.send-timeout:10s}") Duration sendTimeout) {
+        this.kafkaTemplate = kafkaTemplate;
+        this.objectMapper = objectMapper;
+        this.sendTimeout = sendTimeout;
+    }
+
+    public void publish(WebhookDelivery delivery) throws DeadLetterPublishException {
         WebhookDeadLetterEvent event = new WebhookDeadLetterEvent(
                 delivery.getEventId(),
                 delivery.getId(),
@@ -32,8 +41,8 @@ public class WebhookDeadLetterPublisher {
                 delivery.getEventType(),
                 delivery.getUrl(),
                 delivery.getAttemptCount(),
-                lastError,
-                LocalDateTime.now()
+                delivery.getLastError(),
+                delivery.getUpdatedAt()
         );
 
         try {
@@ -42,19 +51,18 @@ public class WebhookDeadLetterPublisher {
                     WebhookTopics.WEBHOOK_DEAD_LETTER,
                     delivery.getPaymentId().toString(),
                     payload
-            );
-
-            Counter.builder("webhooks.dlt")
-                    .tag("eventType", delivery.getEventType())
-                    .register(meterRegistry)
-                    .increment();
-        } catch (JsonProcessingException e) {
-            log.error(
-                    "Failed to serialize dead letter event for webhook delivery {}: {}",
-                    delivery.getId(),
-                    e.getMessage(),
-                    e
-            );
+            ).get(sendTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new DeadLetterPublishException("Interrupted while publishing dead letter for delivery " + delivery.getId(), e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            throw new DeadLetterPublishException(
+                    "Kafka rejected dead letter for delivery " + delivery.getId() + ": " + cause.getMessage(), cause);
+        } catch (Exception e) {
+            // TimeoutException, serialization failures, and producer errors thrown synchronously by send().
+            throw new DeadLetterPublishException(
+                    "Failed to publish dead letter for delivery " + delivery.getId() + ": " + e.getMessage(), e);
         }
     }
 }

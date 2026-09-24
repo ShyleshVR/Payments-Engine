@@ -17,10 +17,21 @@ payment-created ──► PaymentEventConsumer ──► WebhookEventService
                                                  │ sign + POST (3s connect / 10s read timeout)
                               2xx ──► DELIVERED  │  non-2xx / network error
                                                  ▼
-                     RETRYING (30s base, x2, 8min cap, ±20% jitter) ── after 5 attempts ──► FAILED + DLT
+                     RETRYING (30s base, x2, 8min cap, ±20% jitter) ── after 5 attempts ──► FAILED (committed)
+                                                                                       │
+            WebhookDeadLetterRelay (every 5s) ── publish, wait for Kafka ack ──► webhook-deliveries.DLT
+                                                                  then stamp dlt_published_at
 ```
 
 A subscription deactivated while a delivery is still pending turns that delivery into `CANCELLED` without calling the merchant.
+
+### Dead letters survive a Kafka outage
+
+The delivery transaction only writes `FAILED` and never talks to Kafka. Kafka being down therefore can't roll the delivery back into `RETRYING`, which would re-POST to the merchant with nothing recorded.
+
+`WebhookDeadLetterRelay` publishes committed `FAILED` rows where `dlt_published_at IS NULL` and waits for Kafka's acknowledgement (`webhook.dlt.send-timeout`, 10s by default). It stamps `dlt_published_at` only after Kafka confirms. If Kafka refuses, the row stays pending: the relay logs an error, increments `webhooks.dlt.publish.failed`, and retries on the next run. Delivery to the DLT is **at-least-once**, so consumers should dedupe on `deliveryId`.
+
+To find dead letters still waiting on Kafka: `SELECT id, event_id, updated_at FROM webhook_deliveries WHERE status = 'FAILED' AND dlt_published_at IS NULL;`
 
 ## Merchant contract
 
@@ -67,7 +78,7 @@ boolean valid = MessageDigest.isEqual(expected.getBytes(UTF_8), header.getBytes(
 
 ## Metrics
 
-`webhooks.delivered`, `webhooks.retried`, `webhooks.dlt` (tagged by `eventType`) and the `webhooks.delivery.latency` timer. They appear in the "Webhooks" row of the PayFlow Overview dashboard.
+`webhooks.delivered`, `webhooks.retried`, `webhooks.dlt` (tagged by `eventType`; `webhooks.dlt` counts dead letters Kafka has **confirmed**), `webhooks.dlt.publish.failed` (a Kafka publish attempt that failed and will be retried), and the `webhooks.delivery.latency` timer. They appear in the "Webhooks" row of the PayFlow Overview dashboard.
 
 ## Deliberately deferred
 

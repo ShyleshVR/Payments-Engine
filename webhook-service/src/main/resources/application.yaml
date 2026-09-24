@@ -18,6 +18,12 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        # Fail fast when Kafka is unreachable instead of the 60s/120s client defaults, so a
+        # Kafka outage stalls the DLT relay for seconds, not minutes, per run.
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
     consumer:
       group-id: webhook-service
       auto-offset-reset: earliest
@@ -33,6 +39,9 @@ webhook:
     # A merchant endpoint that hangs must not stall the dispatcher for everyone else.
     connect-timeout: 3s
     read-timeout: 10s
+  dlt:
+    # How long WebhookDeadLetterRelay waits for Kafka to acknowledge a dead letter.
+    send-timeout: 10s
 
 management:
   tracing:

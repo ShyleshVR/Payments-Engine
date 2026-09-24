@@ -1,6 +1,5 @@
 package com.shylesh.webhook_service.service.impl;
 
-import com.shylesh.webhook_service.dlt.WebhookDeadLetterPublisher;
 import com.shylesh.webhook_service.http.WebhookDeliveryException;
 import com.shylesh.webhook_service.http.WebhookHttpClient;
 import com.shylesh.webhook_service.persistence.DeliveryAttemptStatus;
@@ -44,7 +43,6 @@ public class WebhookDeliveryServiceImpl implements WebhookDeliveryService {
     private final WebhookSigner signer;
     private final WebhookHttpClient httpClient;
     private final WebhookRetryPolicy retryPolicy;
-    private final WebhookDeadLetterPublisher deadLetterPublisher;
     private final MeterRegistry meterRegistry;
 
     /*
@@ -135,12 +133,14 @@ public class WebhookDeliveryServiceImpl implements WebhookDeliveryService {
                         error
                 );
             } else {
+                // Only record the failure here. Publishing to the DLT happens after this
+                // transaction commits, in WebhookDeadLetterRelay, so a Kafka outage can
+                // neither roll back FAILED nor lose the dead letter.
                 delivery.markFailed(attemptNumber, error);
                 deliveryRepository.save(delivery);
-                deadLetterPublisher.publish(delivery, error);
 
                 log.error(
-                        "Webhook delivery exhausted retries, sent to DLT. deliveryId={}, attempt={}, error={}",
+                        "Webhook delivery exhausted retries, queued for DLT. deliveryId={}, attempt={}, error={}",
                         delivery.getId(),
                         attemptNumber,
                         error

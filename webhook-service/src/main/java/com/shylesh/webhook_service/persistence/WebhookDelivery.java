@@ -65,6 +65,13 @@ public class WebhookDelivery {
     @Column(name = "last_error", length = 1000)
     private String lastError;
 
+    /**
+     * When the dead letter for this FAILED delivery was confirmed by Kafka. Null on a FAILED
+     * delivery means the dead letter is still pending; see WebhookDeadLetterRelay.
+     */
+    @Column(name = "dlt_published_at")
+    private LocalDateTime dltPublishedAt;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

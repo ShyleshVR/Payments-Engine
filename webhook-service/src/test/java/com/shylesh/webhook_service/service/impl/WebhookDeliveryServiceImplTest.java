@@ -1,6 +1,5 @@
 package com.shylesh.webhook_service.service.impl;
 
-import com.shylesh.webhook_service.dlt.WebhookDeadLetterPublisher;
 import com.shylesh.webhook_service.http.WebhookDeliveryException;
 import com.shylesh.webhook_service.http.WebhookHttpClient;
 import com.shylesh.webhook_service.persistence.*;
@@ -35,7 +34,6 @@ class WebhookDeliveryServiceImplTest {
     private MerchantWebhookSubscriptionRepository subscriptionRepository;
     private WebhookHttpClient httpClient;
     private WebhookRetryPolicy retryPolicy;
-    private WebhookDeadLetterPublisher deadLetterPublisher;
     private MeterRegistry meterRegistry;
     private final WebhookSigner signer = new WebhookSigner();
     private WebhookDeliveryServiceImpl service;
@@ -50,7 +48,6 @@ class WebhookDeliveryServiceImplTest {
         subscriptionRepository = mock(MerchantWebhookSubscriptionRepository.class);
         httpClient = mock(WebhookHttpClient.class);
         retryPolicy = mock(WebhookRetryPolicy.class);
-        deadLetterPublisher = mock(WebhookDeadLetterPublisher.class);
         meterRegistry = new SimpleMeterRegistry();
 
         service = new WebhookDeliveryServiceImpl(
@@ -60,7 +57,6 @@ class WebhookDeliveryServiceImplTest {
                 signer,
                 httpClient,
                 retryPolicy,
-                deadLetterPublisher,
                 meterRegistry
         );
 
@@ -113,7 +109,6 @@ class WebhookDeliveryServiceImplTest {
 
         assertThat(meterRegistry.counter("webhooks.delivered", "eventType", "PAYMENT_COMPLETED").count())
                 .isEqualTo(1.0);
-        verifyNoInteractions(deadLetterPublisher);
     }
 
     @Test
@@ -138,11 +133,10 @@ class WebhookDeliveryServiceImplTest {
 
         assertThat(meterRegistry.counter("webhooks.retried", "eventType", "PAYMENT_COMPLETED").count())
                 .isEqualTo(1.0);
-        verifyNoInteractions(deadLetterPublisher);
     }
 
     @Test
-    void marksFailedAndPublishesToDltWhenRetriesExhausted() throws WebhookDeliveryException {
+    void marksFailedAndLeavesDeadLetterPendingForRelayWhenRetriesExhausted() throws WebhookDeliveryException {
         delivery = delivery(WebhookDeliveryStatus.RETRYING, 4);
         when(httpClient.post(anyString(), anyString(), any()))
                 .thenThrow(new WebhookDeliveryException("connect timed out", (Integer) null));
@@ -152,7 +146,10 @@ class WebhookDeliveryServiceImplTest {
 
         assertThat(delivery.getStatus()).isEqualTo(WebhookDeliveryStatus.FAILED);
         assertThat(delivery.getAttemptCount()).isEqualTo(5);
-        verify(deadLetterPublisher).publish(delivery, "connect timed out");
+        assertThat(delivery.getLastError()).isEqualTo("connect timed out");
+        // Not published here: WebhookDeadLetterRelay picks it up after this transaction commits.
+        assertThat(delivery.getDltPublishedAt()).isNull();
+        verify(deliveryRepository).save(delivery);
     }
 
     @Test
@@ -163,7 +160,7 @@ class WebhookDeliveryServiceImplTest {
 
         assertThat(delivery.getStatus()).isEqualTo(WebhookDeliveryStatus.CANCELLED);
         assertThat(delivery.getLastError()).isEqualTo(WebhookDeliveryServiceImpl.SUBSCRIPTION_INACTIVE_REASON);
-        verifyNoInteractions(httpClient, attemptRepository, deadLetterPublisher);
+        verifyNoInteractions(httpClient, attemptRepository);
     }
 
     @Test
@@ -172,7 +169,7 @@ class WebhookDeliveryServiceImplTest {
 
         service.attemptDelivery(delivered.getId());
 
-        verifyNoInteractions(httpClient, attemptRepository, deadLetterPublisher);
+        verifyNoInteractions(httpClient, attemptRepository);
     }
 
     @Test
@@ -182,6 +179,6 @@ class WebhookDeliveryServiceImplTest {
 
         service.attemptDelivery(missingId);
 
-        verifyNoInteractions(httpClient, attemptRepository, deadLetterPublisher);
+        verifyNoInteractions(httpClient, attemptRepository);
     }
 }
