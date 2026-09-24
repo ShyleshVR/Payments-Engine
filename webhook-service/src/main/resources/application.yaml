@@ -1,0 +1,66 @@
+spring:
+  application:
+    name: webhook-service
+  datasource:
+    url: jdbc:postgresql://localhost:55434/webhook_db
+    username: webhook_user
+    password: webhook_password
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+  flyway:
+    enabled: true
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        # Fail fast when Kafka is unreachable instead of the 60s/120s client defaults, so a
+        # Kafka outage stalls the DLT relay for seconds, not minutes, per run.
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
+    consumer:
+      group-id: webhook-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    template:
+      observation-enabled: true
+    listener:
+      observation-enabled: true
+
+webhook:
+  http:
+    # A merchant endpoint that hangs must not stall the dispatcher for everyone else.
+    connect-timeout: 3s
+    read-timeout: 10s
+  dlt:
+    # How long WebhookDeadLetterRelay waits for Kafka to acknowledge a dead letter.
+    send-timeout: 10s
+
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://localhost:4318/v1/traces
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+server:
+  port: 8083
+
+logging:
+  level:
+    org.apache.kafka.clients.NetworkClient: WARN
