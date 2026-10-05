@@ -6,6 +6,11 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        # Fail fast instead of blocking the outbox publisher when the broker is unreachable.
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
     template:
       observation-enabled: true
   datasource:
@@ -31,6 +36,17 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+
+outbox:
+  publisher:
+    poll-interval: PT5S
+    batch-size: 100
+    send-timeout: 15s
+    initial-backoff: 1s
+    max-backoff: 5m
+  cleanup:
+    interval: PT1H
+    retention: 7d
 
 management:
   tracing:

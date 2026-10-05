@@ -3,6 +3,7 @@ package com.shylesh.payment_service.controller;
 import com.shylesh.payment_service.common.identifier.IdentifierService;
 import com.shylesh.payment_service.dto.CreatePaymentRequest;
 import com.shylesh.payment_service.dto.PaymentResponse;
+import com.shylesh.payment_service.exception.InvalidIdempotencyKeyException;
 import com.shylesh.payment_service.service.PaymentService;
 
 import lombok.RequiredArgsConstructor;
@@ -20,12 +21,19 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class PaymentController {
 
+    private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 255;
+
     private final PaymentService paymentService;
     private final IdentifierService identifierService;
 
     @PostMapping
     public ResponseEntity<PaymentResponse> createPayment(@RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody CreatePaymentRequest request) {
+
+        if (idempotencyKey.isBlank() || idempotencyKey.length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
+            throw new InvalidIdempotencyKeyException(
+                    "Idempotency-Key must be 1-" + MAX_IDEMPOTENCY_KEY_LENGTH + " characters");
+        }
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)

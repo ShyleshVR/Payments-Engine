@@ -142,4 +142,23 @@ class NotificationEventServiceImplTest {
         verifyNoInteractions(notificationRepository, rulesEngine);
         verify(processedEventRepository, never()).save(any());
     }
+
+    @Test
+    void createsNoNotificationsButMarksProcessedWhenPaymentHasNoCustomer() {
+        UUID eventId = UUID.randomUUID();
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        Map<String, Object> data = new java.util.HashMap<>();
+        data.put("paymentId", UUID.randomUUID().toString());
+        data.put("amount", "100.00");
+        data.put("currency", "USD");
+        data.put("merchantId", UUID.randomUUID().toString());
+        data.put("customerId", null);
+
+        when(processedEventRepository.existsById(eventId)).thenReturn(false);
+
+        service.handle(new EventEnvelope(eventId, "PAYMENT_CREATED", LocalDateTime.now(), mapper.valueToTree(data)));
+
+        verifyNoInteractions(notificationRepository, rulesEngine);
+        verify(processedEventRepository, times(1)).save(any());
+    }
 }

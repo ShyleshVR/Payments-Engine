@@ -48,6 +48,9 @@ public class Payment {
     @Column(name = "idempotency_key", nullable = false, updatable = false)
     private String idempotencyKey;
 
+    @Column(name = "request_hash", length = 64, updatable = false)
+    private String requestHash;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

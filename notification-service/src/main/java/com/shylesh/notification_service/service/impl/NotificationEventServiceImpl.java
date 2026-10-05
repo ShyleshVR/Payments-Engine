@@ -54,7 +54,19 @@ public class NotificationEventServiceImpl implements NotificationEventService {
 
         PaymentEventData data = objectMapper.convertValue(envelope.getData(), PaymentEventData.class);
 
-        List<NotificationChannelType> channels = rulesEngine.resolveChannels(envelope.getEventType());
+        List<NotificationChannelType> channels;
+        if (data.getCustomerId() == null) {
+            // Notifications go to the customer, and customerId is optional at payment creation:
+            // with no customer there is nobody to notify. The event is still marked processed.
+            log.info(
+                    "No customer on payment, skipping notifications. eventId={}, paymentId={}",
+                    envelope.getEventId(),
+                    data.getPaymentId()
+            );
+            channels = List.of();
+        } else {
+            channels = rulesEngine.resolveChannels(envelope.getEventType());
+        }
 
         LocalDateTime now = LocalDateTime.now();
 

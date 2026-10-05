@@ -44,7 +44,7 @@ public class KafkaPaymentEventPublisher implements PaymentEventPublisher {
 
         } catch (JsonProcessingException e) {
 
-            throw new IllegalStateException(
+            throw new EventSerializationException(
                     "Failed to create event envelope for outbox event "
                             + outboxEvent.getId(),
                     e

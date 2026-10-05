@@ -21,6 +21,8 @@ import java.util.UUID;
 @EntityListeners(AuditingEntityListener.class)
 public class Notification {
 
+    public static final int MAX_ERROR_LENGTH = 1000;
+
     @Id
     @Column(nullable = false, updatable = false)
     private UUID id;
@@ -52,8 +54,15 @@ public class Notification {
     @Column(name = "next_attempt_at")
     private LocalDateTime nextAttemptAt;
 
-    @Column(name = "last_error", length = 1000)
+    @Column(name = "last_error", length = MAX_ERROR_LENGTH)
     private String lastError;
+
+    @Column(name = "dlt_published_at")
+    private LocalDateTime dltPublishedAt;
+
+    @Version
+    @Column(nullable = false)
+    private Long version;
 
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -62,6 +71,16 @@ public class Notification {
     @LastModifiedDate
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
+
+    /**
+     * Leases the notification to the caller until leaseUntil: pushing next_attempt_at forward
+     * hides it from other dispatchers while the send runs outside any transaction. If the
+     * caller dies mid-send, the lease simply expires and the notification is picked up again.
+     */
+    public void lease(LocalDateTime leaseUntil) {
+        ensureDeliverable();
+        this.nextAttemptAt = leaseUntil;
+    }
 
     public void markSent(int attemptCount) {
         ensureDeliverable();
@@ -76,7 +95,7 @@ public class Notification {
         this.status = NotificationStatus.RETRYING;
         this.attemptCount = attemptCount;
         this.nextAttemptAt = nextAttemptAt;
-        this.lastError = error;
+        this.lastError = truncateError(error);
     }
 
     public void markFailed(int attemptCount, String error) {
@@ -84,11 +103,29 @@ public class Notification {
         this.status = NotificationStatus.FAILED;
         this.attemptCount = attemptCount;
         this.nextAttemptAt = null;
-        this.lastError = error;
+        this.lastError = truncateError(error);
+    }
+
+    public void markDeadLetterPublished(LocalDateTime publishedAt) {
+        if (status != NotificationStatus.FAILED) {
+            throw new InvalidNotificationStateException(id, status);
+        }
+        this.dltPublishedAt = publishedAt;
+    }
+
+    public boolean isDeliverable() {
+        return status == NotificationStatus.PENDING || status == NotificationStatus.RETRYING;
+    }
+
+    public static String truncateError(String error) {
+        if (error == null || error.length() <= MAX_ERROR_LENGTH) {
+            return error;
+        }
+        return error.substring(0, MAX_ERROR_LENGTH);
     }
 
     private void ensureDeliverable() {
-        if (status != NotificationStatus.PENDING && status != NotificationStatus.RETRYING) {
+        if (!isDeliverable()) {
             throw new InvalidNotificationStateException(id, status);
         }
     }
