@@ -206,4 +206,43 @@ class NotificationDeliveryServiceImplTest {
         assertThat(takenOver.getAttemptCount()).isEqualTo(1);
         verifyNoInteractions(deliveryAttemptRepository);
     }
+
+    @Test
+    void permanentFailureSkipsRetriesAndFailsImmediately() throws NotificationDeliveryException {
+        doThrow(NotificationDeliveryException.permanent("550 mailbox does not exist")).when(emailChannel).send(any());
+
+        service.attemptDelivery(notification.getId());
+
+        assertThat(notification.getStatus()).isEqualTo(NotificationStatus.FAILED);
+        assertThat(notification.getAttemptCount()).isEqualTo(1);
+        assertThat(notification.getLastError()).isEqualTo("550 mailbox does not exist");
+        assertThat(notification.getDltPublishedAt()).isNull();
+        verifyNoInteractions(retryPolicy);
+        assertThat(meterRegistry.counter("notifications.failed", "channel", "EMAIL", "eventType", "PAYMENT_CREATED",
+                "reason", "permanent").count()).isEqualTo(1);
+    }
+
+    @Test
+    void unregisteredChannelTypeIsAPermanentFailure() {
+        when(channelRegistry.resolve(NotificationChannelType.EMAIL))
+                .thenThrow(new com.shylesh.notification_service.channel.UnsupportedNotificationChannelException(NotificationChannelType.EMAIL));
+
+        service.attemptDelivery(notification.getId());
+
+        assertThat(notification.getStatus()).isEqualTo(NotificationStatus.FAILED);
+        assertThat(notification.getAttemptCount()).isEqualTo(1);
+        verifyNoInteractions(retryPolicy);
+    }
+
+    @Test
+    void transientFailureStillUsesTheRetryPolicy() throws NotificationDeliveryException {
+        doThrow(new NotificationDeliveryException("503")).when(emailChannel).send(any());
+        when(retryPolicy.canRetry(1)).thenReturn(true);
+        when(retryPolicy.nextAttemptAt(1)).thenReturn(LocalDateTime.now().plusSeconds(30));
+
+        service.attemptDelivery(notification.getId());
+
+        assertThat(notification.getStatus()).isEqualTo(NotificationStatus.RETRYING);
+        verify(retryPolicy).canRetry(1);
+    }
 }

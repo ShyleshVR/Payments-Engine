@@ -1,6 +1,5 @@
 package com.shylesh.ledger_service.service.impl;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shylesh.ledger_service.event.EventEnvelope;
 import com.shylesh.ledger_service.event.PaymentEventData;
 import com.shylesh.ledger_service.event.PaymentEventType;
@@ -34,7 +33,6 @@ public class LedgerPostingServiceImpl implements LedgerPostingService {
     private final LedgerTransactionRepository transactionRepository;
     private final LedgerEntryRepository entryRepository;
     private final LedgerAccountResolver accountResolver;
-    private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
 
     @Override
@@ -50,14 +48,8 @@ public class LedgerPostingServiceImpl implements LedgerPostingService {
             return;
         }
 
-        if (envelope.getData() == null) {
-            throw new IllegalArgumentException(
-                    "Event envelope missing data payload. eventId=" + envelope.getEventId()
-                            + ", eventType=" + envelope.getEventType()
-            );
-        }
-
-        PaymentEventData data = objectMapper.convertValue(envelope.getData(), PaymentEventData.class);
+        // Validated by PaymentEventParser; amount is the exact BigDecimal from the message.
+        PaymentEventData data = envelope.getData();
         PaymentEventType eventType = parseEventType(envelope.getEventType());
 
         if (eventType == PaymentEventType.PAYMENT_COMPLETED) {

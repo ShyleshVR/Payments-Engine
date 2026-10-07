@@ -1,7 +1,7 @@
 package com.shylesh.ledger_service.service.impl;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shylesh.ledger_service.event.EventEnvelope;
+import com.shylesh.ledger_service.event.PaymentEventData;
 import com.shylesh.ledger_service.persistence.*;
 
 import io.micrometer.core.instrument.MeterRegistry;
@@ -14,11 +14,9 @@ import org.mockito.ArgumentCaptor;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -49,7 +47,6 @@ class LedgerPostingServiceImplTest {
                 transactionRepository,
                 entryRepository,
                 accountResolver,
-                new ObjectMapper().findAndRegisterModules(),
                 meterRegistry
         );
 
@@ -80,16 +77,12 @@ class LedgerPostingServiceImplTest {
     }
 
     private EventEnvelope envelope(UUID eventId, String eventType, UUID paymentId, UUID merchantId) {
-        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
-        Map<String, Object> data = Map.of(
-                "paymentId", paymentId.toString(),
-                "amount", "150.00",
-                "currency", "USD",
-                "merchantId", merchantId.toString(),
-                "customerId", UUID.randomUUID().toString(),
-                "createdAt", LocalDateTime.now().toString()
-        );
-        return new EventEnvelope(eventId, eventType, LocalDateTime.now(), mapper.valueToTree(data));
+        return envelope(eventId, eventType, paymentId, merchantId, new BigDecimal("150.00"));
+    }
+
+    private EventEnvelope envelope(UUID eventId, String eventType, UUID paymentId, UUID merchantId, BigDecimal amount) {
+        return new EventEnvelope(eventId, eventType, LocalDateTime.now(),
+                new PaymentEventData(paymentId, amount, "USD", merchantId, UUID.randomUUID(), LocalDateTime.now()));
     }
 
     @Test
@@ -175,18 +168,16 @@ class LedgerPostingServiceImplTest {
     }
 
     @Test
-    void rejectsEventWithMissingDataPayloadInsteadOfThrowingNpe() {
+    void postsLargeAmountsExactlyAsReceived() {
         UUID eventId = UUID.randomUUID();
-
+        BigDecimal amount = new BigDecimal("12345678901234567.89");
         when(processedEventRepository.existsById(eventId)).thenReturn(false);
 
-        EventEnvelope envelopeWithoutData = new EventEnvelope(eventId, "PAYMENT_COMPLETED", LocalDateTime.now(), null);
+        service.handle(envelope(eventId, "PAYMENT_COMPLETED", UUID.randomUUID(), UUID.randomUUID(), amount));
 
-        assertThatThrownBy(() -> service.handle(envelopeWithoutData))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(eventId.toString());
-
-        verifyNoInteractions(transactionRepository, entryRepository, accountResolver);
-        verify(processedEventRepository, never()).save(any());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<LedgerEntry>> entryCaptor = ArgumentCaptor.forClass(List.class);
+        verify(entryRepository).saveAll(entryCaptor.capture());
+        assertThat(entryCaptor.getValue()).allSatisfy(entry -> assertThat(entry.getAmount()).isEqualTo(amount));
     }
 }

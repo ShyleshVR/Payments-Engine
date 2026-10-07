@@ -1,5 +1,6 @@
 package com.shylesh.ledger_service.event;
 
+import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 
@@ -9,6 +10,7 @@ import java.util.UUID;
 
 @Getter
 @NoArgsConstructor
+@AllArgsConstructor
 public class PaymentEventData {
 
     private UUID paymentId;

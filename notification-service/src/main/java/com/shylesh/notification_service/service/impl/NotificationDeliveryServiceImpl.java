@@ -2,6 +2,8 @@ package com.shylesh.notification_service.service.impl;
 
 import com.shylesh.notification_service.channel.NotificationContext;
 import com.shylesh.notification_service.channel.NotificationChannelRegistry;
+import com.shylesh.notification_service.channel.NotificationDeliveryException;
+import com.shylesh.notification_service.channel.UnsupportedNotificationChannelException;
 import com.shylesh.notification_service.persistance.DeliveryAttemptStatus;
 import com.shylesh.notification_service.persistance.Notification;
 import com.shylesh.notification_service.persistance.NotificationDeliveryAttempt;
@@ -48,7 +50,16 @@ public class NotificationDeliveryServiceImpl implements NotificationDeliveryServ
     private final TransactionTemplate transactionTemplate;
     private final MeterRegistry meterRegistry;
 
-    private record SendResult(boolean success, String error) {
+    /** permanent: retrying can't succeed, so the notification fails now instead of using its retries. */
+    private record SendResult(boolean success, String error, boolean permanent) {
+
+        static SendResult ok() {
+            return new SendResult(true, null, false);
+        }
+
+        static SendResult failed(String error, boolean permanent) {
+            return new SendResult(false, error, permanent);
+        }
     }
 
     @Override
@@ -86,12 +97,15 @@ public class NotificationDeliveryServiceImpl implements NotificationDeliveryServ
 
         try {
             channelRegistry.resolve(notification.getChannel()).send(context);
-            return new SendResult(true, null);
+            return SendResult.ok();
+        } catch (NotificationDeliveryException e) {
+            return SendResult.failed(describe(e), e.isPermanent());
+        } catch (UnsupportedNotificationChannelException e) {
+            return SendResult.failed(describe(e), true);
         } catch (Exception e) {
-            // Any exception is a failed attempt, not just NotificationDeliveryException: an
-            // unexpected one must still be recorded and count towards the retry limit, or the
-            // notification would be redelivered forever without ever reaching the DLT.
-            return new SendResult(false, describe(e));
+            // Any other exception is still a failed, counted attempt (treated as transient), or
+            // the notification would be redelivered forever without ever reaching the DLT.
+            return SendResult.failed(describe(e), false);
         }
     }
 
@@ -113,7 +127,7 @@ public class NotificationDeliveryServiceImpl implements NotificationDeliveryServ
         if (result.success()) {
             recordSuccess(notification, attemptNumber);
         } else {
-            recordFailure(notification, attemptNumber, result.error());
+            recordFailure(notification, attemptNumber, result.error(), result.permanent());
         }
     }
 
@@ -151,10 +165,10 @@ public class NotificationDeliveryServiceImpl implements NotificationDeliveryServ
         );
     }
 
-    private void recordFailure(Notification notification, int attemptNumber, String error) {
+    private void recordFailure(Notification notification, int attemptNumber, String error, boolean permanent) {
         recordAttempt(notification.getId(), attemptNumber, DeliveryAttemptStatus.FAILURE, error);
 
-        if (retryPolicy.canRetry(attemptNumber)) {
+        if (!permanent && retryPolicy.canRetry(attemptNumber)) {
             LocalDateTime nextAttemptAt = retryPolicy.nextAttemptAt(attemptNumber);
             notification.markRetrying(attemptNumber, nextAttemptAt, error);
             notificationRepository.save(notification);
@@ -173,11 +187,20 @@ public class NotificationDeliveryServiceImpl implements NotificationDeliveryServ
                     error
             );
         } else {
+            String reason = permanent ? "permanent" : "exhausted";
             notification.markFailed(attemptNumber, error);
             notificationRepository.save(notification);
 
+            Counter.builder("notifications.failed")
+                    .tag("channel", notification.getChannel().name())
+                    .tag("eventType", notification.getEventType())
+                    .tag("reason", reason)
+                    .register(meterRegistry)
+                    .increment();
+
             log.error(
-                    "Notification delivery exhausted retries, queued for DLT. notificationId={}, attempt={}, error={}",
+                    "Notification delivery failed ({}), queued for DLT. notificationId={}, attempt={}, error={}",
+                    reason,
                     notification.getId(),
                     attemptNumber,
                     error
