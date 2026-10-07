@@ -177,6 +177,7 @@ public class PaymentServiceImpl implements PaymentService {
         return paymentMapper.toResponse(updatedPayment);
     }
 
+    @Transactional
     @Override
     public PaymentResponse failPayment(UUID id) {
         Payment payment = paymentRepository.findById(id)
@@ -185,6 +186,9 @@ public class PaymentServiceImpl implements PaymentService {
         payment.markFailed();
         Payment updatedPayment = paymentRepository.save(payment);
         recordStatusTransition(updatedPayment.getStatus());
+
+        PaymentCreatedEvent event = paymentEventFactory.create(updatedPayment);
+        outboxEventRepository.save(outboxEventFactory.createPaymentFailedEvent(event));
 
         return paymentMapper.toResponse(updatedPayment);
     }

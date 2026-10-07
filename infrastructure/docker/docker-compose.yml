@@ -52,6 +52,24 @@ services:
     volumes:
       - postgres_ledger_data:/var/lib/postgresql/data
 
+  postgres-webhook:
+    image: postgres:17
+    container_name: webhook-postgres
+
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: webhook_db
+      POSTGRES_USER: webhook_user
+      POSTGRES_PASSWORD: webhook_password
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "55434:5432"
+
+    volumes:
+      - postgres_webhook_data:/var/lib/postgresql/data
+
   redis:
     image: redis:7-alpine
     container_name: payflow-redis
@@ -128,4 +146,5 @@ volumes:
   postgres_data:
   postgres_notification_data:
   postgres_ledger_data:
+  postgres_webhook_data:
   grafana_data:

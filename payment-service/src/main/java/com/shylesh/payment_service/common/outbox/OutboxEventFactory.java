@@ -25,6 +25,10 @@ public class OutboxEventFactory {
         return build(event, "PAYMENT_COMPLETED");
     }
 
+    public OutboxEvent createPaymentFailedEvent(PaymentCreatedEvent event) {
+        return build(event, "PAYMENT_FAILED");
+    }
+
     public OutboxEvent createPaymentRefundedEvent(PaymentCreatedEvent event) {
         return build(event, "PAYMENT_REFUNDED");
     }

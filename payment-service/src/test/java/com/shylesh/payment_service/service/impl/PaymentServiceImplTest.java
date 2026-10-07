@@ -180,4 +180,24 @@ class PaymentServiceImplTest {
 
         assertThatThrownBy(() -> service.createPayment(KEY, request)).isSameAs(violation);
     }
+
+    @Test
+    void failingAPaymentWritesAPaymentFailedOutboxEvent() {
+        Payment processing = Payment.builder()
+                .id(UUID.randomUUID())
+                .amount(new BigDecimal("50.00"))
+                .currency("USD")
+                .merchantId(merchantId)
+                .status(PaymentStatus.PROCESSING)
+                .idempotencyKey(KEY)
+                .build();
+        when(paymentRepository.findById(processing.getId())).thenReturn(Optional.of(processing));
+        when(paymentRepository.save(any(Payment.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        PaymentResponse response = service.failPayment(processing.getId());
+
+        assertThat(response.getStatus()).isEqualTo("FAILED");
+        verify(outboxEventRepository).save(argThat(event ->
+                event.getEventType().equals("PAYMENT_FAILED") && event.getAggregateId().equals(processing.getId())));
+    }
 }

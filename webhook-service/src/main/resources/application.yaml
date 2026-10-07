@@ -1,0 +1,83 @@
+spring:
+  application:
+    name: webhook-service
+  datasource:
+    url: jdbc:postgresql://localhost:55434/webhook_db
+    username: webhook_user
+    password: webhook_password
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # delivery workers + DLT relay + consumer each hold a connection briefly
+      maximum-pool-size: 15
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  flyway:
+    enabled: true
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        # The producer must give up before WebhookDeadLetterPublisher stops waiting (15s),
+        # so a send we treat as failed is dropped rather than delivered late and duplicated.
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
+    consumer:
+      group-id: webhook-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    template:
+      observation-enabled: true
+    listener:
+      observation-enabled: true
+  task:
+    scheduling:
+      # Dispatcher and DLT relay each get their own thread; the HTTP sends themselves run on
+      # the webhook delivery worker pool.
+      pool:
+        size: 3
+
+webhook:
+  delivery:
+    poll-interval: PT5S
+    max-in-flight: 100
+    workers: 8
+    connect-timeout: 3s
+    read-timeout: 10s
+    lease: 2m
+  retry:
+    max-attempts: 5
+    base-delay: 30s
+    max-delay: 8m
+  security:
+    require-https: true
+    allow-private-targets: false
+
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://localhost:4318/v1/traces
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+server:
+  port: 8083
+
+logging:
+  level:
+    org.apache.kafka.clients.NetworkClient: WARN

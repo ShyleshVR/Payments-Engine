@@ -1,8 +1,10 @@
 package com.shylesh.payment_service.event;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.cfg.JsonNodeFeature;
 
 import com.shylesh.payment_service.common.outbox.OutboxEvent;
 
@@ -25,8 +27,12 @@ public class KafkaPaymentEventPublisher implements PaymentEventPublisher {
     public CompletableFuture<SendResult<String, Object>> publish(OutboxEvent outboxEvent) {
 
         try {
-            JsonNode payload =
-                    objectMapper.readTree(outboxEvent.getPayload());
+            // Amounts must reach consumers exactly as stored. By default readTree turns decimals
+            // into doubles (large amounts can lose cents) and strips trailing zeros (75.50 -> 75.5).
+            JsonNode payload = objectMapper.reader()
+                    .with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                    .without(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES)
+                    .readTree(outboxEvent.getPayload());
 
             EventEnvelope<JsonNode> envelope =
                     new EventEnvelope<>(
