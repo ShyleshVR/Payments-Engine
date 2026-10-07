@@ -74,7 +74,6 @@ class PaymentServiceImplTest {
         request = CreatePaymentRequest.builder()
                 .amount(new BigDecimal("50.00"))
                 .currency("USD")
-                .merchantId(merchantId)
                 .build();
 
         when(idGenerator.generate()).thenAnswer(invocation -> UUID.randomUUID());
@@ -97,10 +96,10 @@ class PaymentServiceImplTest {
 
     @Test
     void createsPaymentWithFingerprintAndCachesKeyOnlyAfterCommit() {
-        PaymentResponse response = service.createPayment(KEY, request);
+        PaymentResponse response = service.createPayment(merchantId, KEY, request);
 
         assertThat(response.getStatus()).isEqualTo("CREATED");
-        verify(paymentRepository).saveAndFlush(argThat(p -> fingerprint.of(request).equals(p.getRequestHash())));
+        verify(paymentRepository).saveAndFlush(argThat(p -> fingerprint.of(merchantId, request).equals(p.getRequestHash())));
         verify(outboxEventRepository).save(any());
 
         var inOrder = inOrder(transactionManager, idempotencyService);
@@ -110,10 +109,10 @@ class PaymentServiceImplTest {
 
     @Test
     void replaysExistingPaymentForSameKeyAndSameBody() {
-        Payment existing = existingPayment(fingerprint.of(request));
+        Payment existing = existingPayment(fingerprint.of(merchantId, request));
         when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, KEY)).thenReturn(Optional.of(existing));
 
-        PaymentResponse response = service.createPayment(KEY, request);
+        PaymentResponse response = service.createPayment(merchantId, KEY, request);
 
         assertThat(response.getPaymentId()).isEqualTo("pay_" + existing.getId());
         verify(paymentRepository, never()).saveAndFlush(any());
@@ -122,16 +121,15 @@ class PaymentServiceImplTest {
 
     @Test
     void rejectsSameKeyReusedWithDifferentBody() {
-        Payment existing = existingPayment(fingerprint.of(request));
+        Payment existing = existingPayment(fingerprint.of(merchantId, request));
         when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, KEY)).thenReturn(Optional.of(existing));
 
         CreatePaymentRequest different = CreatePaymentRequest.builder()
                 .amount(new BigDecimal("999.00"))
                 .currency("EUR")
-                .merchantId(merchantId)
                 .build();
 
-        assertThatThrownBy(() -> service.createPayment(KEY, different))
+        assertThatThrownBy(() -> service.createPayment(merchantId, KEY, different))
                 .isInstanceOf(IdempotencyKeyReuseException.class);
         verify(paymentRepository, never()).saveAndFlush(any());
     }
@@ -141,7 +139,7 @@ class PaymentServiceImplTest {
         Payment legacy = existingPayment(null);
         when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, KEY)).thenReturn(Optional.of(legacy));
 
-        PaymentResponse response = service.createPayment(KEY, request);
+        PaymentResponse response = service.createPayment(merchantId, KEY, request);
 
         assertThat(response.getPaymentId()).isEqualTo("pay_" + legacy.getId());
     }
@@ -151,7 +149,7 @@ class PaymentServiceImplTest {
         when(idempotencyService.get(merchantId, KEY)).thenReturn(Optional.of(UUID.randomUUID().toString()));
         when(paymentRepository.findById(any())).thenReturn(Optional.empty());
 
-        PaymentResponse response = service.createPayment(KEY, request);
+        PaymentResponse response = service.createPayment(merchantId, KEY, request);
 
         assertThat(response.getStatus()).isEqualTo("CREATED");
         verify(paymentRepository).saveAndFlush(any());
@@ -159,14 +157,14 @@ class PaymentServiceImplTest {
 
     @Test
     void concurrentInsertWithSameKeyIsAnsweredAsReplayOfTheWinner() {
-        Payment winner = existingPayment(fingerprint.of(request));
+        Payment winner = existingPayment(fingerprint.of(merchantId, request));
         when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, KEY))
                 .thenReturn(Optional.empty())
                 .thenReturn(Optional.of(winner));
         when(paymentRepository.saveAndFlush(any(Payment.class)))
                 .thenThrow(new DataIntegrityViolationException("uk_payment_merchant_idempotency_key"));
 
-        PaymentResponse response = service.createPayment(KEY, request);
+        PaymentResponse response = service.createPayment(merchantId, KEY, request);
 
         assertThat(response.getPaymentId()).isEqualTo("pay_" + winner.getId());
         verify(transactionManager).rollback(any());
@@ -178,7 +176,7 @@ class PaymentServiceImplTest {
         DataIntegrityViolationException violation = new DataIntegrityViolationException("some other constraint");
         when(paymentRepository.saveAndFlush(any(Payment.class))).thenThrow(violation);
 
-        assertThatThrownBy(() -> service.createPayment(KEY, request)).isSameAs(violation);
+        assertThatThrownBy(() -> service.createPayment(merchantId, KEY, request)).isSameAs(violation);
     }
 
     @Test
@@ -199,5 +197,36 @@ class PaymentServiceImplTest {
         assertThat(response.getStatus()).isEqualTo("FAILED");
         verify(outboxEventRepository).save(argThat(event ->
                 event.getEventType().equals("PAYMENT_FAILED") && event.getAggregateId().equals(processing.getId())));
+    }
+
+    @Test
+    void anotherMerchantsPaymentIsNotFound() {
+        UUID paymentId = UUID.randomUUID();
+        UUID otherMerchant = UUID.randomUUID();
+        when(paymentRepository.findByIdAndMerchantId(paymentId, otherMerchant)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.getPayment(otherMerchant, paymentId))
+                .isInstanceOf(com.shylesh.payment_service.exception.PaymentNotFoundException.class);
+        assertThatThrownBy(() -> service.refundPayment(otherMerchant, paymentId))
+                .isInstanceOf(com.shylesh.payment_service.exception.PaymentNotFoundException.class);
+        assertThatThrownBy(() -> service.cancelPayment(otherMerchant, paymentId))
+                .isInstanceOf(com.shylesh.payment_service.exception.PaymentNotFoundException.class);
+        verify(paymentRepository, never()).save(any());
+        verify(paymentRepository, never()).findById(paymentId);
+    }
+
+    @Test
+    void ownerCanReadItsPayment() {
+        Payment own = existingPayment(fingerprint.of(merchantId, request));
+        when(paymentRepository.findByIdAndMerchantId(own.getId(), merchantId)).thenReturn(Optional.of(own));
+
+        assertThat(service.getPayment(merchantId, own.getId()).getPaymentId()).isEqualTo("pay_" + own.getId());
+    }
+
+    @Test
+    void createdPaymentBelongsToTheTokensMerchant() {
+        service.createPayment(merchantId, KEY, request);
+
+        verify(paymentRepository).saveAndFlush(argThat(p -> merchantId.equals(p.getMerchantId())));
     }
 }

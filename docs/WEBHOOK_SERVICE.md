@@ -262,17 +262,19 @@ def verify(secret: str, timestamp: str, signature: str, raw_body: bytes, toleran
 [WebhookSubscriptionController](../webhook-service/src/main/java/com/shylesh/webhook_service/controller/WebhookSubscriptionController.java),
 [WebhookDeliveryController](../webhook-service/src/main/java/com/shylesh/webhook_service/controller/WebhookDeliveryController.java)
 
-**Unauthenticated in this phase by design.** Merchant identity and auth are the next roadmap
-item and will close this gap. Until then, SSRF protection on URLs is the main safeguard.
+Every call needs a merchant access token with the `webhooks:manage` scope
+(see [MERCHANT_AUTH.md](MERCHANT_AUTH.md)). The merchant always comes from the token: there is no
+`merchantId` in the body or path, and a merchant can only see its own subscription and deliveries.
 
 | Endpoint | Behaviour |
 |---|---|
-| `POST /api/v1/webhooks/subscriptions` with `{"merchantId", "url"}` | Validates the URL. **201** with the `secret` (`whsec_` + 64 hex chars), **shown only in this response**. **409** if the merchant already has an active subscription; **400** for a bad or unsafe URL. |
-| `GET /api/v1/webhooks/subscriptions/{merchantId}` | **200** without the secret, or **404** |
-| `DELETE /api/v1/webhooks/subscriptions/{merchantId}` | **204**. Deactivates the subscription and **cancels pending deliveries** in the same transaction. **404** if none is active. |
-| `GET /api/v1/webhooks/deliveries/payment/{paymentId}` | Audit trail: every delivery and attempt for a payment. Accepts `pay_<uuid>` or a raw UUID. |
+| `POST /api/v1/webhooks/subscriptions` with `{"url"}` | Validates the URL. **201** with the `secret` (`whsec_` + 64 hex chars), **shown only in this response**. **409** if the merchant already has an active subscription; **400** for a bad or unsafe URL. |
+| `GET /api/v1/webhooks/subscriptions` | The caller's active subscription, without the secret, or **404** |
+| `DELETE /api/v1/webhooks/subscriptions` | **204**. Deactivates the subscription and **cancels pending deliveries** in the same transaction. **404** if none is active. |
+| `GET /api/v1/webhooks/deliveries/payment/{paymentId}` | Audit trail of the caller's deliveries and attempts for a payment. Accepts `pay_<uuid>` or a raw UUID. Another merchant's payment yields an empty list. |
 
-To change a URL, delete the subscription and create a new one.
+To change a URL, delete the subscription and create a new one. Missing or invalid tokens get
+**401**, a missing scope or an operator token without a merchant gets **403**.
 
 Errors use the same shape as payment-service:
 
@@ -368,7 +370,6 @@ plain text for now; encryption at rest is deferred together with secret rotation
   consumes while any number deliver. Explicit partition counts belong to the Kubernetes phase.
 - **DNS rebinding.** A small window remains between the address check and the HTTP client's
   own lookup. Closing it fully needs a resolver hook in the client or an egress proxy.
-- **Authentication.** The subscription API is unauthenticated until the merchant auth phase.
 - **Secret rotation and encryption.** Deferred.
 
 ---
@@ -393,11 +394,11 @@ Requires Kafka (`localhost:9092`) and payment-service publishing to `payment-cre
 Quick check:
 
 ```bash
-curl -s -X POST localhost:8083/api/v1/webhooks/subscriptions \
-  -H 'Content-Type: application/json' \
-  -d '{"merchantId":"<uuid>","url":"http://127.0.0.1:9101/hooks"}'
-# then create a payment for that merchant and watch:
-curl -s localhost:8083/api/v1/webhooks/deliveries/payment/pay_<uuid>
+# TOKEN: a merchant access token (see MERCHANT_AUTH.md)
+curl -s -X POST localhost:8083/api/v1/webhooks/subscriptions -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"url":"http://127.0.0.1:9101/hooks"}'
+# then create a payment with the same token and watch:
+curl -s localhost:8083/api/v1/webhooks/deliveries/payment/pay_<uuid> -H "Authorization: Bearer $TOKEN"
 ```
 
 ---

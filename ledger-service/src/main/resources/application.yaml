@@ -13,6 +13,16 @@ spring:
 
   flyway:
     enabled: true
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Public keys from merchant-service, fetched on first use and cached: tokens keep
+          # validating while merchant-service is down.
+          jwk-set-uri: http://localhost:8084/oauth2/jwks
+          issuer-uri: http://localhost:8084
+          audiences: payflow-api
   kafka:
     bootstrap-servers: localhost:9092
     producer:

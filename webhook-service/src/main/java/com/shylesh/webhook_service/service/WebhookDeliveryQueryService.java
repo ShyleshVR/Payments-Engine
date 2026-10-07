@@ -7,5 +7,6 @@ import java.util.UUID;
 
 public interface WebhookDeliveryQueryService {
 
-    List<WebhookDeliveryResponse> findByPayment(UUID paymentId);
+    /** Only this merchant's deliveries for the payment (empty for anyone else's payment). */
+    List<WebhookDeliveryResponse> findByPayment(UUID merchantId, UUID paymentId);
 }

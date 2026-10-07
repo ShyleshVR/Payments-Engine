@@ -4,10 +4,13 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 public interface LedgerAccountRepository extends JpaRepository<LedgerAccount, UUID> {
+
+    List<LedgerAccount> findByOwnerTypeAndOwnerId(LedgerAccountType ownerType, UUID ownerId);
 
     Optional<LedgerAccount> findByOwnerTypeAndOwnerIdAndCurrency(
             LedgerAccountType ownerType, UUID ownerId, String currency

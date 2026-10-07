@@ -27,8 +27,8 @@ public class WebhookDeliveryQueryServiceImpl implements WebhookDeliveryQueryServ
     private final WebhookDeliveryAttemptRepository attemptRepository;
 
     @Override
-    public List<WebhookDeliveryResponse> findByPayment(UUID paymentId) {
-        List<WebhookDelivery> deliveries = deliveryRepository.findByPaymentIdOrderByCreatedAtAsc(paymentId);
+    public List<WebhookDeliveryResponse> findByPayment(UUID merchantId, UUID paymentId) {
+        List<WebhookDelivery> deliveries = deliveryRepository.findByPaymentIdAndMerchantIdOrderByCreatedAtAsc(paymentId, merchantId);
         if (deliveries.isEmpty()) {
             return List.of();
         }

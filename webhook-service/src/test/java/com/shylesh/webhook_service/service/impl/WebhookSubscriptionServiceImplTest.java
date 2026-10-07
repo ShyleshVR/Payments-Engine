@@ -62,7 +62,7 @@ class WebhookSubscriptionServiceImplTest {
 
     @Test
     void createReturnsTheSecretExactlyOnce() {
-        WebhookSubscriptionResponse created = service.create(new CreateWebhookSubscriptionRequest(merchantId, URL));
+        WebhookSubscriptionResponse created = service.create(merchantId, new CreateWebhookSubscriptionRequest(URL));
 
         assertThat(created.secret()).startsWith("whsec_");
         assertThat(created.active()).isTrue();
@@ -76,7 +76,7 @@ class WebhookSubscriptionServiceImplTest {
     void secondActiveSubscriptionIsRejected() {
         when(subscriptionRepository.findByMerchantIdAndActiveTrue(merchantId)).thenReturn(Optional.of(active()));
 
-        assertThatThrownBy(() -> service.create(new CreateWebhookSubscriptionRequest(merchantId, URL)))
+        assertThatThrownBy(() -> service.create(merchantId, new CreateWebhookSubscriptionRequest(URL)))
                 .isInstanceOf(SubscriptionAlreadyExistsException.class);
         verify(subscriptionRepository, never()).saveAndFlush(any());
     }
@@ -85,13 +85,13 @@ class WebhookSubscriptionServiceImplTest {
     void concurrentCreateLosingTheUniqueIndexRaceIsAConflict() {
         when(subscriptionRepository.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("uq_webhook_subscriptions_active_merchant"));
 
-        assertThatThrownBy(() -> service.create(new CreateWebhookSubscriptionRequest(merchantId, URL)))
+        assertThatThrownBy(() -> service.create(merchantId, new CreateWebhookSubscriptionRequest(URL)))
                 .isInstanceOf(SubscriptionAlreadyExistsException.class);
     }
 
     @Test
     void internalUrlIsRejected() {
-        assertThatThrownBy(() -> service.create(new CreateWebhookSubscriptionRequest(merchantId, "https://10.0.0.5/hooks")))
+        assertThatThrownBy(() -> service.create(merchantId, new CreateWebhookSubscriptionRequest("https://10.0.0.5/hooks")))
                 .isInstanceOf(InvalidWebhookUrlException.class);
         verify(subscriptionRepository, never()).saveAndFlush(any());
     }

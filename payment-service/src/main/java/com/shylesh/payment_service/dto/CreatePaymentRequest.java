@@ -11,6 +11,7 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+/** The merchant is not part of the request: it is always taken from the caller's token. */
 public class CreatePaymentRequest {
 
     @NotNull
@@ -20,9 +21,6 @@ public class CreatePaymentRequest {
     @NotBlank
     @Size(min = 3, max = 3)
     private String currency;
-
-    @NotNull
-    private UUID merchantId;
 
     private UUID customerId;
 

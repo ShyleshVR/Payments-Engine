@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.UUID;
 
 /**
  * SHA-256 over a canonical form of the create request, so a replayed Idempotency-Key can be
@@ -18,11 +19,11 @@ import java.util.HexFormat;
 @Component
 public class RequestFingerprint {
 
-    public String of(CreatePaymentRequest request) {
+    public String of(UUID merchantId, CreatePaymentRequest request) {
         StringBuilder canonical = new StringBuilder();
         append(canonical, request.getAmount() == null ? null : request.getAmount().stripTrailingZeros().toPlainString());
         append(canonical, request.getCurrency());
-        append(canonical, request.getMerchantId() == null ? null : request.getMerchantId().toString());
+        append(canonical, merchantId == null ? null : merchantId.toString());
         append(canonical, request.getCustomerId() == null ? null : request.getCustomerId().toString());
         append(canonical, request.getDescription());
 

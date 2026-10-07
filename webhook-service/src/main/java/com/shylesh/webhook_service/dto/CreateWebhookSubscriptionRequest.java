@@ -1,13 +1,10 @@
 package com.shylesh.webhook_service.dto;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
-import java.util.UUID;
-
+/** The merchant is not part of the request: it is always taken from the caller's token. */
 public record CreateWebhookSubscriptionRequest(
-        @NotNull UUID merchantId,
         @NotBlank @Size(max = 2048) String url
 ) {
 }
