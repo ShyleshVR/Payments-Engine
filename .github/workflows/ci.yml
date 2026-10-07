@@ -1,0 +1,81 @@
+# Tests every service (unit + Testcontainers integration tests), then builds the Docker images
+# and validates the Kubernetes manifests that deploy them. Images are not pushed anywhere.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every module's result, not just the first failure.
+      fail-fast: false
+      matrix:
+        module:
+          - payment-service
+          - ledger-service
+          - notification-service
+          - webhook-service
+          - merchant-service
+          - api-gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: ${{ matrix.module }}/pom.xml
+
+      # Testcontainers uses the runner's Docker daemon for Postgres and Redis.
+      - name: mvn verify
+        working-directory: ${{ matrix.module }}
+        run: mvn -B -ntp verify
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-${{ matrix.module }}
+          path: ${{ matrix.module }}/target/surefire-reports/
+          retention-days: 7
+
+  deploy-artifacts:
+    name: images and manifests
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: "*/pom.xml"
+
+      - name: Build images
+        run: bash scripts/build-images.sh
+
+      # Throwaway dev secrets, only so the overlay renders; nothing is deployed.
+      - name: Render manifests
+        run: |
+          bash scripts/generate-local-secrets.sh
+          kubectl kustomize --load-restrictor LoadRestrictionsNone k8s/overlays/local > rendered.yaml
+
+      - name: Validate manifests against the Kubernetes API schemas
+        run: |
+          docker run --rm -i ghcr.io/yannh/kubeconform:v0.6.7 \
+            -strict -summary -kubernetes-version 1.31.0 < rendered.yaml

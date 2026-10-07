@@ -366,8 +366,10 @@ plain text for now; encryption at rest is deferred together with secret rotation
 - **Ordering per payment.** Deliveries are sent in parallel and retried independently, so a
   payment's events can arrive out of order; Stripe has the same model. Per-payment ordering
   is possible but would let one failing delivery hold back that payment's later events.
-- **More than one active consumer.** `payment-created` has a single partition, so one instance
-  consumes while any number deliver. Explicit partition counts belong to the Kubernetes phase.
+- **More consumers than partitions.** `payment-created` has 3 partitions, declared explicitly by
+  payment-service together with `payment-created.DLT` (same count, because the dead-letter
+  recoverer keeps the source partition number); webhook-service declares
+  `webhook-deliveries.DLT`. Up to 3 instances consume; any further instances only deliver.
 - **DNS rebinding.** A small window remains between the address check and the HTTP client's
   own lookup. Closing it fully needs a resolver hook in the client or an egress proxy.
 - **Secret rotation and encryption.** Deferred.

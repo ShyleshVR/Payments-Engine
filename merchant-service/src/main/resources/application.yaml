@@ -1,4 +1,7 @@
 spring:
+  lifecycle:
+    # On SIGTERM (pod shutdown / rolling update) finish in-flight requests before exiting.
+    timeout-per-shutdown-phase: 20s
   application:
     name: merchant-service
   datasource:
@@ -27,6 +30,11 @@ payflow:
       client-secret: ${PAYFLOW_ADMIN_CLIENT_SECRET:local-dev-admin-secret}
 
 management:
+  endpoint:
+    health:
+      # /actuator/health/liveness and /readiness for Kubernetes probes (also on outside K8s).
+      probes:
+        enabled: true
   tracing:
     sampling:
       probability: 1.0
@@ -42,4 +50,5 @@ management:
       application: ${spring.application.name}
 
 server:
+  shutdown: graceful
   port: 8084

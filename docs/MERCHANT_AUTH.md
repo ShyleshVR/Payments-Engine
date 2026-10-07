@@ -149,7 +149,7 @@ Breaking changes for API clients:
 |---|---|---|
 | OAuth2 client credentials + JWT, own authorization server (Spring Authorization Server) | Standard machine-to-machine flow (PayPal's API uses it); services verify tokens locally, so merchant-service isn't on the request path; the API gateway (next phase) can validate the same tokens at the edge | Merchants need a token request before API calls (vs. a static API key) |
 | Tokens are **not stored** (`StatelessAuthorizationService`) | JWTs are self-contained and there's no introspection or refresh; Spring's default in-memory store would grow by one entry per token forever | A single token can't be revoked; revocation stops new tokens and existing ones expire within 15 min |
-| Signing key **in the database**, created on first start | Every instance signs with the same key; tokens survive restarts; table supports future rotation (kid) | Private key stored unencrypted: acceptable for local development only, moves to a KMS / secret store in the Kubernetes phase |
+| Signing key from a **mounted PEM** (Kubernetes Secret) when `signing-key.location` is set, otherwise **in the database**, created on first start | Every replica signs with the same key; tokens survive restarts; the kid is the key's RFC 7638 thumbprint, so it is stable and identical on every replica | The database fallback stores the private key unencrypted (local runs only); the Secret is only as safe as the cluster's secret handling (production: a KMS or secret manager) |
 | Clients read **live** from the merchant tables (`MerchantRegisteredClientRepository`) | Revocation and suspension apply to the very next token request | One DB lookup per token request |
 | bcrypt for client secrets | Spring's default, versioned via `{id}` prefix | ~100ms per token request; fine at one token per merchant per 15 min |
 | Scope defaults to all of the client's scopes when none requested | Spring grants an empty scope set in that case, which would produce useless tokens | Clients wanting least privilege must request a subset explicitly |
@@ -168,10 +168,17 @@ merchant-service (`payflow.auth.*`):
 | `max-active-credentials` | `2` | Rotation without downtime |
 | `bootstrap-admin.client-id` | `payflow-admin` | |
 | `bootstrap-admin.client-secret` | `${PAYFLOW_ADMIN_CLIENT_SECRET:local-dev-admin-secret}` | Logs a warning when the local default is in use |
+| `signing-key.location` | unset | Spring resource of a PKCS#8 PEM RSA private key (e.g. `file:/etc/payflow/signing-key/signing-key.pem`). Set: that key signs and the database key is never created. Unset: database key. A PKCS#1 file (`BEGIN RSA PRIVATE KEY`) is rejected at startup with the `openssl pkcs8` command to convert it. |
 
 Resource servers (`spring.security.oauth2.resourceserver.jwt.*`): `jwk-set-uri`
 (`http://localhost:8084/oauth2/jwks`), `issuer-uri` (`http://localhost:8084`), `audiences`
 (`payflow-api`).
+
+**On Kubernetes** (see [DEPLOYMENT.md](DEPLOYMENT.md)) the issuer is the public URL clients use,
+`http://localhost` (the API gateway), on merchant-service and on every resource server, while
+the keys are fetched over cluster DNS from `http://merchant-service:8084/oauth2/jwks`. Resource
+servers validate `iss` as a string and never call the issuer URL, so the two can differ. The
+signing key comes from the `payflow-signing-key` Secret.
 
 ## Observability
 
@@ -248,7 +255,7 @@ for the run):
 
 | Package | Contents |
 |---|---|
-| `auth` | `MerchantRegisteredClientRepository` (live client lookup), `PayflowTokenCustomizer` (claims), `StatelessAuthorizationService`, `DatabaseJwkSource` (persisted signing key) |
+| `auth` | `MerchantRegisteredClientRepository` (live client lookup), `PayflowTokenCustomizer` (claims), `StatelessAuthorizationService`, `SigningKeyConfig` (chooses the key source), `PemFileJwkSource` (key from a mounted PEM), `DatabaseJwkSource` (persisted key, local runs) |
 | `config` | `SecurityConfig` (authorization-server and admin-API filter chains, password encoder, decoder), `AuthProperties`, `TokenEndpointMetricsConfig` |
 | `service` | `MerchantAdminServiceImpl` (onboarding, credential issue/revoke under row lock, suspend/activate), `CredentialGenerator` |
 | `controller` / `dto` / `exception` | Admin API, request/response types, error mapping |

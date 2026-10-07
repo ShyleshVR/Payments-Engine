@@ -1,0 +1,50 @@
+# Local cluster (Docker Desktop Kubernetes): locally built images, generated dev secrets,
+# observability UIs on localhost, and webhook settings that allow an in-cluster test receiver.
+# Render/apply with scripts/k8s-up.sh (it needs --load-restrictor LoadRestrictionsNone).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Also here, so the Secrets generated below land in (and are linked within) the namespace.
+namespace: payflow
+
+resources:
+  - ../../base
+
+images:
+  - { name: payflow/api-gateway, newTag: local }
+  - { name: payflow/merchant-service, newTag: local }
+  - { name: payflow/payment-service, newTag: local }
+  - { name: payflow/ledger-service, newTag: local }
+  - { name: payflow/notification-service, newTag: local }
+  - { name: payflow/webhook-service, newTag: local }
+
+# Created by scripts/generate-local-secrets.sh into secrets/ (git-ignored). A real environment
+# would source these from a secret manager (External Secrets, Sealed Secrets, Vault) instead.
+secretGenerator:
+  - name: payflow-db
+    envs:
+      - secrets/db.env
+  - name: payflow-auth
+    envs:
+      - secrets/auth.env
+  - name: payflow-signing-key
+    files:
+      - signing-key.pem=secrets/signing-key.pem
+
+patches:
+  # Grafana, Prometheus and Jaeger UIs on http://localhost:3000, :9090 and :16686.
+  - target: { kind: Service, name: "grafana|prometheus|jaeger" }
+    patch: |-
+      - op: add
+        path: /spec/type
+        value: LoadBalancer
+  # Webhook endpoints may be plain-http in-cluster addresses here (a test receiver). Never in
+  # production: that is what the SSRF guard exists to prevent.
+  - target: { kind: Deployment, name: webhook-service }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: WEBHOOK_SECURITY_REQUIREHTTPS, value: "false" }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: WEBHOOK_SECURITY_ALLOWPRIVATETARGETS, value: "true" }

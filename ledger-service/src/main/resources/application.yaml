@@ -1,4 +1,7 @@
 spring:
+  lifecycle:
+    # On SIGTERM (pod shutdown / rolling update) finish in-flight requests before exiting.
+    timeout-per-shutdown-phase: 20s
   application:
     name: ledger-service
   datasource:
@@ -39,6 +42,11 @@ spring:
       observation-enabled: true
 
 management:
+  endpoint:
+    health:
+      # /actuator/health/liveness and /readiness for Kubernetes probes (also on outside K8s).
+      probes:
+        enabled: true
   tracing:
     sampling:
       probability: 1.0
@@ -54,6 +62,7 @@ management:
       application: ${spring.application.name}
 
 server:
+  shutdown: graceful
   port: 8082
 
 logging:

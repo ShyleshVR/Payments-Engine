@@ -1,4 +1,7 @@
 spring:
+  lifecycle:
+    # On SIGTERM (pod shutdown / rolling update) finish in-flight requests before exiting.
+    timeout-per-shutdown-phase: 20s
   application:
     name: webhook-service
   datasource:
@@ -70,7 +73,18 @@ webhook:
     require-https: true
     allow-private-targets: false
 
+payflow:
+  kafka:
+    # Topics this service owns are created with these settings (see KafkaTopicsConfig).
+    partitions: 3
+    replication-factor: 1
+
 management:
+  endpoint:
+    health:
+      # /actuator/health/liveness and /readiness for Kubernetes probes (also on outside K8s).
+      probes:
+        enabled: true
   tracing:
     sampling:
       probability: 1.0
@@ -86,6 +100,7 @@ management:
       application: ${spring.application.name}
 
 server:
+  shutdown: graceful
   port: 8083
 
 logging:

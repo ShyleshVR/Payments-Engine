@@ -15,10 +15,7 @@ import com.shylesh.merchant_service.persistence.SigningKeyStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
-import org.springframework.boot.ApplicationArguments;
-import org.springframework.boot.ApplicationRunner;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.security.GeneralSecurityException;
@@ -41,12 +38,12 @@ import java.util.UUID;
  * one-ACTIVE-key unique index and reads the winner's key instead.
  *
  * The same source feeds the JWT encoder (private key) and the /oauth2/jwks endpoint (Spring
- * publishes only the public half).
+ * publishes only the public half). Used for local runs; in Kubernetes the key comes from a
+ * Secret instead (PemFileJwkSource). Chosen in SigningKeyConfig.
  */
-@Component
 @RequiredArgsConstructor
 @Slf4j
-public class DatabaseJwkSource implements JWKSource<SecurityContext>, ApplicationRunner {
+public class DatabaseJwkSource implements JWKSource<SecurityContext> {
 
     private static final int RSA_KEY_BITS = 2048;
 
@@ -54,12 +51,6 @@ public class DatabaseJwkSource implements JWKSource<SecurityContext>, Applicatio
     private final TransactionTemplate transactionTemplate;
 
     private volatile JWKSet jwkSet;
-
-    @Override
-    public void run(ApplicationArguments args) {
-        // Load (or create) the key at startup so a broken key store fails fast, not on the first token request.
-        jwkSet();
-    }
 
     @Override
     public List<JWK> get(JWKSelector selector, SecurityContext context) {
