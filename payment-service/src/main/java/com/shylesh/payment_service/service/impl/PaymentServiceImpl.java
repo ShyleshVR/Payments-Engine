@@ -51,27 +51,27 @@ public class PaymentServiceImpl implements PaymentService {
      * only written once the payment has actually committed.
      */
     @Override
-    public PaymentResponse createPayment(String idempotencyKey, CreatePaymentRequest request) {
+    public PaymentResponse createPayment(UUID merchantId, String idempotencyKey, CreatePaymentRequest request) {
 
-        String requestHash = requestFingerprint.of(request);
+        String requestHash = requestFingerprint.of(merchantId, request);
 
-        Optional<Payment> existingPayment = findByIdempotencyKey(request.getMerchantId(), idempotencyKey);
+        Optional<Payment> existingPayment = findByIdempotencyKey(merchantId, idempotencyKey);
         if (existingPayment.isPresent()) {
             return replay(existingPayment.get(), idempotencyKey, requestHash);
         }
 
         Payment savedPayment;
         try {
-            savedPayment = transactionTemplate.execute(status -> insertPayment(idempotencyKey, requestHash, request));
+            savedPayment = transactionTemplate.execute(status -> insertPayment(merchantId, idempotencyKey, requestHash, request));
         } catch (DataIntegrityViolationException e) {
             // A concurrent request with the same key committed first; answer as its replay.
             Payment winner = paymentRepository
-                    .findByMerchantIdAndIdempotencyKey(request.getMerchantId(), idempotencyKey)
+                    .findByMerchantIdAndIdempotencyKey(merchantId, idempotencyKey)
                     .orElseThrow(() -> e);
             return replay(winner, idempotencyKey, requestHash);
         }
 
-        idempotencyService.put(request.getMerchantId(), idempotencyKey, savedPayment.getId().toString());
+        idempotencyService.put(merchantId, idempotencyKey, savedPayment.getId().toString());
 
         Counter.builder("payments.created")
                 .tag("currency", request.getCurrency())
@@ -112,12 +112,12 @@ public class PaymentServiceImpl implements PaymentService {
         return paymentMapper.toResponse(payment);
     }
 
-    private Payment insertPayment(String idempotencyKey, String requestHash, CreatePaymentRequest request) {
+    private Payment insertPayment(UUID merchantId, String idempotencyKey, String requestHash, CreatePaymentRequest request) {
         Payment payment = Payment.builder()
                 .id(idGenerator.generate())
                 .amount(request.getAmount())
                 .currency(request.getCurrency())
-                .merchantId(request.getMerchantId())
+                .merchantId(merchantId)
                 .customerId(request.getCustomerId())
                 .description(request.getDescription())
                 .status(PaymentStatus.CREATED)
@@ -133,6 +133,15 @@ public class PaymentServiceImpl implements PaymentService {
         return savedPayment;
     }
 
+    /**
+     * Another merchant's payment is reported as not found, exactly like a payment that doesn't
+     * exist, so ids can't be probed across merchants.
+     */
+    private Payment findOwned(UUID merchantId, UUID paymentId) {
+        return paymentRepository.findByIdAndMerchantId(paymentId, merchantId)
+                .orElseThrow(() -> new PaymentNotFoundException(paymentId));
+    }
+
     private void recordStatusTransition(PaymentStatus status) {
         Counter.builder("payments.status.transitions")
                 .tag("status", status.name())
@@ -141,10 +150,9 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
-    public PaymentResponse getPayment(UUID paymentId) {
+    public PaymentResponse getPayment(UUID merchantId, UUID paymentId) {
 
-        Payment payment = paymentRepository.findById(paymentId)
-                .orElseThrow(() -> new PaymentNotFoundException(paymentId));
+        Payment payment = findOwned(merchantId, paymentId);
 
         return paymentMapper.toResponse(payment);
     }
@@ -194,9 +202,8 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
-    public PaymentResponse cancelPayment(UUID id) {
-        Payment payment = paymentRepository.findById(id)
-                .orElseThrow(() -> new PaymentNotFoundException(id));
+    public PaymentResponse cancelPayment(UUID merchantId, UUID id) {
+        Payment payment = findOwned(merchantId, id);
 
         payment.markCancelled();
         Payment updatedPayment = paymentRepository.save(payment);
@@ -207,9 +214,8 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Transactional
     @Override
-    public PaymentResponse refundPayment(UUID id) {
-        Payment payment = paymentRepository.findById(id)
-                .orElseThrow(() -> new PaymentNotFoundException(id));
+    public PaymentResponse refundPayment(UUID merchantId, UUID id) {
+        Payment payment = findOwned(merchantId, id);
 
         payment.markRefunded();
         Payment updatedPayment = paymentRepository.save(payment);

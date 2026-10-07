@@ -35,16 +35,16 @@ public class WebhookSubscriptionServiceImpl implements WebhookSubscriptionServic
 
     @Override
     @Transactional
-    public WebhookSubscriptionResponse create(CreateWebhookSubscriptionRequest request) {
+    public WebhookSubscriptionResponse create(UUID merchantId, CreateWebhookSubscriptionRequest request) {
         String url = targetValidator.validateForSubscription(request.url()).toString();
 
-        if (subscriptionRepository.findByMerchantIdAndActiveTrue(request.merchantId()).isPresent()) {
-            throw new SubscriptionAlreadyExistsException(request.merchantId());
+        if (subscriptionRepository.findByMerchantIdAndActiveTrue(merchantId).isPresent()) {
+            throw new SubscriptionAlreadyExistsException(merchantId);
         }
 
         MerchantWebhookSubscription subscription = MerchantWebhookSubscription.builder()
                 .id(UUID.randomUUID())
-                .merchantId(request.merchantId())
+                .merchantId(merchantId)
                 .url(url)
                 .secret(signer.newSecret())
                 .active(true)
@@ -55,7 +55,7 @@ public class WebhookSubscriptionServiceImpl implements WebhookSubscriptionServic
             subscriptionRepository.saveAndFlush(subscription);
         } catch (DataIntegrityViolationException e) {
             // Lost a race with a concurrent create for the same merchant (unique active index).
-            throw new SubscriptionAlreadyExistsException(request.merchantId());
+            throw new SubscriptionAlreadyExistsException(merchantId);
         }
 
         log.info("Webhook subscription created. subscriptionId={}, merchantId={}", subscription.getId(), subscription.getMerchantId());

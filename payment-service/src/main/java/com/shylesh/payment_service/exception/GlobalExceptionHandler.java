@@ -6,6 +6,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -25,6 +27,25 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(PaymentNotFoundException.class)
     public ResponseEntity<ApiErrorResponse> handleNotFound(PaymentNotFoundException ex) {
         return error(HttpStatus.NOT_FOUND, ex.getMessage());
+    }
+
+    /**
+     * @PreAuthorize denials surface inside the controller call, where the catch-all below would
+     * otherwise turn them into a 500.
+     */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiErrorResponse> handleAccessDenied(AccessDeniedException ex) {
+        return error(HttpStatus.FORBIDDEN, "Token does not grant access to this resource");
+    }
+
+    @ExceptionHandler(MerchantContextRequiredException.class)
+    public ResponseEntity<ApiErrorResponse> handleMerchantContextRequired(MerchantContextRequiredException ex) {
+        return error(HttpStatus.FORBIDDEN, ex.getMessage());
+    }
+
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<ApiErrorResponse> handleAuthentication(AuthenticationException ex) {
+        return error(HttpStatus.UNAUTHORIZED, "Missing or invalid bearer token");
     }
 
     @ExceptionHandler({InvalidIdentifierException.class, InvalidIdempotencyKeyException.class})

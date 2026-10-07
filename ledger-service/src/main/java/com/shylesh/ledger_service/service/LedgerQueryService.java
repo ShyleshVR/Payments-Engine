@@ -12,4 +12,7 @@ public interface LedgerQueryService {
     AccountBalanceResponse getBalance(LedgerAccountType ownerType, UUID ownerId, String currency);
 
     List<LedgerTransactionResponse> getTransactionsForPayment(UUID paymentId);
+
+    /** Only the payment's transactions that touch one of this merchant's accounts. */
+    List<LedgerTransactionResponse> getTransactionsForPayment(UUID paymentId, UUID merchantId);
 }

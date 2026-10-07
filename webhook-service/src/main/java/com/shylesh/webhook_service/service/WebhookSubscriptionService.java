@@ -7,7 +7,7 @@ import java.util.UUID;
 
 public interface WebhookSubscriptionService {
 
-    WebhookSubscriptionResponse create(CreateWebhookSubscriptionRequest request);
+    WebhookSubscriptionResponse create(UUID merchantId, CreateWebhookSubscriptionRequest request);
 
     WebhookSubscriptionResponse get(UUID merchantId);
 

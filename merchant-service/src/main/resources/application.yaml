@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: merchant-service
+  datasource:
+    url: jdbc:postgresql://localhost:55435/merchant_db
+    username: merchant_user
+    password: merchant_password
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  flyway:
+    enabled: true
+
+payflow:
+  auth:
+    issuer: http://localhost:8084
+    audience: payflow-api
+    access-token-ttl: 15m
+    max-active-credentials: 2
+    bootstrap-admin:
+      client-id: payflow-admin
+      # Local development default only; set PAYFLOW_ADMIN_CLIENT_SECRET anywhere else.
+      client-secret: ${PAYFLOW_ADMIN_CLIENT_SECRET:local-dev-admin-secret}
+
+management:
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://localhost:4318/v1/traces
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+server:
+  port: 8084

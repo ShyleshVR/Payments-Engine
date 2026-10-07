@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -57,6 +58,23 @@ public class LedgerQueryServiceImpl implements LedgerQueryService {
                         transaction,
                         entriesByTransactionId.getOrDefault(transaction.getId(), List.of())
                 ))
+                .toList();
+    }
+
+    @Override
+    public List<LedgerTransactionResponse> getTransactionsForPayment(UUID paymentId, UUID merchantId) {
+        Set<UUID> merchantAccountIds = accountRepository.findByOwnerTypeAndOwnerId(LedgerAccountType.MERCHANT, merchantId)
+                .stream()
+                .map(LedgerAccount::getId)
+                .collect(Collectors.toSet());
+
+        if (merchantAccountIds.isEmpty()) {
+            return List.of();
+        }
+
+        return getTransactionsForPayment(paymentId).stream()
+                .filter(transaction -> transaction.getEntries().stream()
+                        .anyMatch(entry -> merchantAccountIds.contains(entry.getAccountId())))
                 .toList();
     }
 

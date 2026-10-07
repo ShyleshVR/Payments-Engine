@@ -43,7 +43,7 @@ public interface WebhookDeliveryRepository extends JpaRepository<WebhookDelivery
             """, nativeQuery = true)
     Optional<WebhookDelivery> lockNextUnpublishedDeadLetter();
 
-    List<WebhookDelivery> findByPaymentIdOrderByCreatedAtAsc(UUID paymentId);
+    List<WebhookDelivery> findByPaymentIdAndMerchantIdOrderByCreatedAtAsc(UUID paymentId, UUID merchantId);
 
     /**
      * Cancels every open delivery of a subscription. Bumps version so an in-flight attempt's

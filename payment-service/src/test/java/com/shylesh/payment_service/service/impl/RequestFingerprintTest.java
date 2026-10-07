@@ -18,23 +18,28 @@ class RequestFingerprintTest {
         return CreatePaymentRequest.builder()
                 .amount(new BigDecimal(amount))
                 .currency("USD")
-                .merchantId(merchantId)
                 .description(description)
                 .build();
     }
 
     @Test
     void sameAmountWithDifferentScaleIsTheSameRequest() {
-        assertThat(fingerprint.of(request("10", null))).isEqualTo(fingerprint.of(request("10.00", null)));
+        assertThat(fingerprint.of(merchantId, request("10", null))).isEqualTo(fingerprint.of(merchantId, request("10.00", null)));
     }
 
     @Test
     void differentAmountIsADifferentRequest() {
-        assertThat(fingerprint.of(request("10.00", null))).isNotEqualTo(fingerprint.of(request("10.01", null)));
+        assertThat(fingerprint.of(merchantId, request("10.00", null))).isNotEqualTo(fingerprint.of(merchantId, request("10.01", null)));
     }
 
     @Test
     void missingAndEmptyDescriptionAreDistinguished() {
-        assertThat(fingerprint.of(request("10", null))).isNotEqualTo(fingerprint.of(request("10", "")));
+        assertThat(fingerprint.of(merchantId, request("10", null))).isNotEqualTo(fingerprint.of(merchantId, request("10", "")));
+    }
+
+    @Test
+    void sameBodyFromAnotherMerchantIsADifferentRequest() {
+        assertThat(fingerprint.of(merchantId, request("10", null)))
+                .isNotEqualTo(fingerprint.of(UUID.randomUUID(), request("10", null)));
     }
 }
