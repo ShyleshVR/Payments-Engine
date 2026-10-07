@@ -26,7 +26,7 @@ public class NotificationChannelRegistry {
     public NotificationChannel resolve(NotificationChannelType type) {
         NotificationChannel channel = channelsByType.get(type);
         if (channel == null) {
-            throw new IllegalStateException("No NotificationChannel registered for type " + type);
+            throw new UnsupportedNotificationChannelException(type);
         }
         return channel;
     }

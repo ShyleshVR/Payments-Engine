@@ -1,6 +1,5 @@
 package com.shylesh.notification_service.service.impl;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shylesh.notification_service.event.EventEnvelope;
 import com.shylesh.notification_service.event.PaymentEventData;
 import com.shylesh.notification_service.persistance.Notification;
@@ -30,7 +29,6 @@ public class NotificationEventServiceImpl implements NotificationEventService {
     private final ProcessedEventRepository processedEventRepository;
     private final NotificationRepository notificationRepository;
     private final NotificationRulesEngine rulesEngine;
-    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional
@@ -45,14 +43,8 @@ public class NotificationEventServiceImpl implements NotificationEventService {
             return;
         }
 
-        if (envelope.getData() == null || envelope.getData().isNull()) {
-            throw new IllegalArgumentException(
-                    "Event envelope missing data payload. eventId=" + envelope.getEventId()
-                            + ", eventType=" + envelope.getEventType()
-            );
-        }
-
-        PaymentEventData data = objectMapper.convertValue(envelope.getData(), PaymentEventData.class);
+        // Validated by PaymentEventParser.
+        PaymentEventData data = envelope.getData();
 
         List<NotificationChannelType> channels;
         if (data.getCustomerId() == null) {

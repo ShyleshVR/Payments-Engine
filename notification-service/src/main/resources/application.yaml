@@ -31,6 +31,12 @@ spring:
       observation-enabled: true
     listener:
       observation-enabled: true
+  task:
+    scheduling:
+      # The dispatcher and the DLT relay each get their own thread instead of sharing the
+      # default single one, so a slow dispatch batch can't hold up dead-letter publishing.
+      pool:
+        size: 3
 
 management:
   tracing:

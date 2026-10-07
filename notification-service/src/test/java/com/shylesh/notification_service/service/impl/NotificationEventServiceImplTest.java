@@ -1,7 +1,7 @@
 package com.shylesh.notification_service.service.impl;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shylesh.notification_service.event.EventEnvelope;
+import com.shylesh.notification_service.event.PaymentEventData;
 import com.shylesh.notification_service.persistance.Notification;
 import com.shylesh.notification_service.persistance.NotificationChannelType;
 import com.shylesh.notification_service.persistance.NotificationRepository;
@@ -12,13 +12,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -35,25 +34,12 @@ class NotificationEventServiceImplTest {
         notificationRepository = mock(NotificationRepository.class);
         rulesEngine = mock(NotificationRulesEngine.class);
 
-        service = new NotificationEventServiceImpl(
-                processedEventRepository,
-                notificationRepository,
-                rulesEngine,
-                new ObjectMapper().findAndRegisterModules()
-        );
+        service = new NotificationEventServiceImpl(processedEventRepository, notificationRepository, rulesEngine);
     }
 
     private EventEnvelope envelope(UUID eventId, String eventType, UUID paymentId, UUID customerId) {
-        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
-        Map<String, Object> data = Map.of(
-                "paymentId", paymentId.toString(),
-                "amount", "100.00",
-                "currency", "USD",
-                "merchantId", UUID.randomUUID().toString(),
-                "customerId", customerId.toString(),
-                "createdAt", LocalDateTime.now().toString()
-        );
-        return new EventEnvelope(eventId, eventType, LocalDateTime.now(), mapper.valueToTree(data));
+        return new EventEnvelope(eventId, eventType, LocalDateTime.now(),
+                new PaymentEventData(paymentId, new BigDecimal("100.00"), "USD", UUID.randomUUID(), customerId, LocalDateTime.now()));
     }
 
     @Test
@@ -107,56 +93,12 @@ class NotificationEventServiceImplTest {
     }
 
     @Test
-    void rejectsEventWithMissingDataPayloadInsteadOfThrowingNpe() {
-        UUID eventId = UUID.randomUUID();
-
-        when(processedEventRepository.existsById(eventId)).thenReturn(false);
-
-        EventEnvelope envelopeWithoutData = new EventEnvelope(eventId, "PAYMENT_CREATED", LocalDateTime.now(), null);
-
-        assertThatThrownBy(() -> service.handle(envelopeWithoutData))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(eventId.toString());
-
-        verifyNoInteractions(notificationRepository, rulesEngine);
-        verify(processedEventRepository, never()).save(any());
-    }
-
-    @Test
-    void rejectsEventWithJsonNullDataPayloadInsteadOfThrowingNpe() throws Exception {
-        UUID eventId = UUID.randomUUID();
-
-        when(processedEventRepository.existsById(eventId)).thenReturn(false);
-
-        // Deserializing the wire format is what actually produces a NullNode for "data": null,
-        // as opposed to a Java null reference — this is the shape a real malformed Kafka message takes.
-        String json = "{\"eventId\":\"" + eventId + "\",\"eventType\":\"PAYMENT_CREATED\","
-                + "\"occurredAt\":\"2026-01-01T00:00:00\",\"data\":null}";
-        EventEnvelope envelopeWithNullNode = new ObjectMapper().findAndRegisterModules()
-                .readValue(json, EventEnvelope.class);
-
-        assertThatThrownBy(() -> service.handle(envelopeWithNullNode))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining(eventId.toString());
-
-        verifyNoInteractions(notificationRepository, rulesEngine);
-        verify(processedEventRepository, never()).save(any());
-    }
-
-    @Test
     void createsNoNotificationsButMarksProcessedWhenPaymentHasNoCustomer() {
         UUID eventId = UUID.randomUUID();
-        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
-        Map<String, Object> data = new java.util.HashMap<>();
-        data.put("paymentId", UUID.randomUUID().toString());
-        data.put("amount", "100.00");
-        data.put("currency", "USD");
-        data.put("merchantId", UUID.randomUUID().toString());
-        data.put("customerId", null);
 
         when(processedEventRepository.existsById(eventId)).thenReturn(false);
 
-        service.handle(new EventEnvelope(eventId, "PAYMENT_CREATED", LocalDateTime.now(), mapper.valueToTree(data)));
+        service.handle(envelope(eventId, "PAYMENT_CREATED", UUID.randomUUID(), null));
 
         verifyNoInteractions(notificationRepository, rulesEngine);
         verify(processedEventRepository, times(1)).save(any());
