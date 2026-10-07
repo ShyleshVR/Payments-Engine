@@ -1,0 +1,127 @@
+# Payments API and the transactional outbox relay to Kafka (the relay claims rows with
+# FOR UPDATE SKIP LOCKED, so replicas share the work without double-publishing).
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+spec:
+  selector:
+    app: payment-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: payment-service
+  strategy:
+    # Start a new pod and wait until it is ready before removing an old one.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: payment-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "8080"
+    spec:
+      # preStop sleep (10s) + Spring's graceful shutdown (20s) must fit inside this.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        # Mounted Secret files get this group, so the app user (1001) can read them.
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Spring Boot fails fast without its database; waiting here avoids crash-loop backoff
+        # while the infrastructure starts. Uses the app image's busybox nc (no extra image).
+        - name: wait-for-dependencies
+          image: payflow/payment-service
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "for t in $WAIT_FOR; do until nc -z -w 2 ${t%:*} ${t#*:}; do echo \"waiting for $t\"; sleep 2; done; done"]
+          env:
+            - name: WAIT_FOR
+              value: "postgres:5432 kafka:9092"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 32Mi }
+      containers:
+        - name: payment-service
+          image: payflow/payment-service
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: payflow-env
+          env:
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:postgresql://postgres:5432/payflow
+            - name: SPRING_DATASOURCE_USERNAME
+              value: payflow
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom: { secretKeyRef: { name: payflow-db, key: payment-password } }
+          # Up to 3 minutes for the JVM, Flyway migrations and the rest of startup.
+          startupProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 5
+            failureThreshold: 36
+          # Not ready: taken out of the Service's endpoints (no traffic), not restarted.
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 5
+            failureThreshold: 3
+          # Liveness reflects the application itself, never its dependencies: a database
+          # outage must not restart every pod.
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          lifecycle:
+            # Keep serving while the endpoint removal propagates, then Spring drains
+            # in-flight requests on SIGTERM.
+            preStop:
+              exec:
+                command: ["sleep", "10"]
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { memory: 768Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            # Root filesystem is read-only; the JVM and Tomcat need a writable temp dir.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Voluntary disruptions (node drain, cluster upgrade) always leave one pod serving.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payment-service
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: payment-service

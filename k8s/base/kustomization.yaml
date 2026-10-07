@@ -1,0 +1,60 @@
+# PayFlow on Kubernetes: the six applications plus the infrastructure they need, all in the
+# payflow namespace. Secrets are not defined here: each overlay generates them (see
+# overlays/local), so the base never carries credentials.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: payflow
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: payflow
+
+resources:
+  - namespace.yaml
+  - infra/postgres.yaml
+  - infra/kafka.yaml
+  - infra/redis.yaml
+  - observability/jaeger.yaml
+  - observability/prometheus.yaml
+  - observability/grafana.yaml
+  - apps/merchant-service.yaml
+  - apps/payment-service.yaml
+  - apps/ledger-service.yaml
+  - apps/notification-service.yaml
+  - apps/webhook-service.yaml
+  - apps/api-gateway.yaml
+  - apps/autoscaling.yaml
+
+configMapGenerator:
+  # Settings shared by every application, as Spring Boot environment variables.
+  - name: payflow-env
+    literals:
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_DATA_REDIS_HOST=redis
+      - MANAGEMENT_OTLP_TRACING_ENDPOINT=http://jaeger:4318/v1/traces
+      # Keys are fetched over cluster DNS, but tokens carry the public issuer (the gateway URL),
+      # which is what clients see; resource servers validate iss against it without calling it.
+      - SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI=http://merchant-service:8084/oauth2/jwks
+      - SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI=http://localhost
+      - PAYFLOW_AUTH_ISSUER=http://localhost
+      - PAYFLOW_KAFKA_PARTITIONS=3
+      - PAYFLOW_KAFKA_REPLICATION_FACTOR=1
+  - name: postgres-init
+    files:
+      - infra/postgres-init.sh
+  - name: prometheus-config
+    files:
+      - prometheus.yml=observability/prometheus.yml
+  # Grafana is provisioned from the same files the docker-compose stack uses, so the dashboard
+  # has a single source. They live outside this directory, which is why the manifests are
+  # rendered with --load-restrictor LoadRestrictionsNone (scripts/k8s-up.sh).
+  - name: grafana-datasources
+    files:
+      - ../../infrastructure/docker/grafana/provisioning/datasources/datasource.yml
+  - name: grafana-dashboard-providers
+    files:
+      - ../../infrastructure/docker/grafana/provisioning/dashboards/dashboards.yml
+  - name: grafana-dashboards
+    files:
+      - ../../infrastructure/docker/grafana/dashboards/payflow-overview.json

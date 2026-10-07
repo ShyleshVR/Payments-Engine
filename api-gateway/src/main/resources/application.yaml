@@ -1,0 +1,109 @@
+spring:
+  lifecycle:
+    # On SIGTERM (pod shutdown / rolling update) finish in-flight requests before exiting.
+    timeout-per-shutdown-phase: 20s
+  application:
+    name: api-gateway
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Public keys from merchant-service, fetched on first use and cached: tokens keep
+          # validating at the edge while merchant-service is down.
+          jwk-set-uri: http://localhost:8084/oauth2/jwks
+          issuer-uri: http://localhost:8084
+          audiences: payflow-api
+
+  cloud:
+    gateway:
+      server:
+        webflux:
+          default-filters:
+            # Token bucket per caller in Redis, shared by every gateway replica.
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@rateLimitKeyResolver}"
+                redis-rate-limiter.replenishRate: ${payflow.gateway.rate-limit.replenish-rate}
+                redis-rate-limiter.burstCapacity: ${payflow.gateway.rate-limit.burst-capacity}
+                redis-rate-limiter.requestedTokens: 1
+            # A replica that dies mid-request (crash, OOM kill) or refuses connections while
+            # starting: retry reads on another pod. Only GET/HEAD (safe to repeat) and only for
+            # transport failures, never for a response the service actually sent (series empty).
+            # Declared after the rate limiter, so retries don't spend the caller's tokens. POSTs
+            # are not retried here: clients retry them with the same Idempotency-Key.
+            - name: Retry
+              args:
+                retries: 2
+                methods: GET,HEAD
+                series: ""
+                statuses: ""
+                exceptions: java.io.IOException,org.springframework.cloud.gateway.support.TimeoutException
+                backoff:
+                  firstBackoff: 50ms
+                  maxBackoff: 500ms
+                  factor: 2
+                  basedOnPreviousValue: false
+          httpclient:
+            # Fail fast on an unreachable pod; bound how long a hung service can hold a request.
+            connect-timeout: 2000
+            response-timeout: 30s
+          routes:
+            # Token endpoint, JWKS and the merchant admin API.
+            - id: merchant-service
+              uri: ${payflow.gateway.routes.merchant}
+              predicates:
+                - Path=/oauth2/**,/api/v1/merchants/**
+            - id: payment-service
+              uri: ${payflow.gateway.routes.payment}
+              predicates:
+                - Path=/api/v1/payments/**
+            - id: ledger-service
+              uri: ${payflow.gateway.routes.ledger}
+              predicates:
+                - Path=/api/v1/ledger/**
+            - id: webhook-service
+              uri: ${payflow.gateway.routes.webhook}
+              predicates:
+                - Path=/api/v1/webhooks/**
+
+payflow:
+  gateway:
+    # Upstreams: local ports here, Kubernetes service DNS in the cluster (env overrides).
+    routes:
+      merchant: http://localhost:8084
+      payment: http://localhost:8080
+      ledger: http://localhost:8082
+      webhook: http://localhost:8083
+    rate-limit:
+      # Sustained requests per second per caller, and how many can arrive at once.
+      replenish-rate: 20
+      burst-capacity: 40
+
+management:
+  endpoint:
+    health:
+      # /actuator/health/liveness and /readiness for Kubernetes probes (also on outside K8s).
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://localhost:4318/v1/traces
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+server:
+  shutdown: graceful
+  port: 8085

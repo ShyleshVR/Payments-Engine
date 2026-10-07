@@ -1,0 +1,85 @@
+# One Postgres instance hosting five databases (one per service, each with its own user).
+# Production would run one managed instance per service or an operator-managed HA cluster;
+# a single pod keeps the local cluster's footprint small.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17
+          # Room for every replica's connection pool, including autoscaled ones.
+          args: ["-c", "max_connections=300"]
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: payflow-db, key: postgres-password } }
+            # Subdirectory: the volume root may contain lost+found, which initdb refuses.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: PAYMENT_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: payflow-db, key: payment-password } }
+            - name: LEDGER_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: payflow-db, key: ledger-password } }
+            - name: NOTIFICATION_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: payflow-db, key: notification-password } }
+            - name: WEBHOOK_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: payflow-db, key: webhook-password } }
+            - name: MERCHANT_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: payflow-db, key: merchant-password } }
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+            defaultMode: 0555
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
