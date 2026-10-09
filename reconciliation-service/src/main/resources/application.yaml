@@ -1,0 +1,76 @@
+spring:
+  lifecycle:
+    # On SIGTERM (pod shutdown / rolling update) finish in-flight requests before exiting.
+    timeout-per-shutdown-phase: 20s
+  application:
+    name: reconciliation-service
+  datasource:
+    url: jdbc:postgresql://localhost:55437/recon_db
+    username: recon_user
+    password: recon_password
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+  security:
+    oauth2:
+      # Its own API: operator tokens from merchant-service.
+      resourceserver:
+        jwt:
+          jwk-set-uri: http://localhost:8084/oauth2/jwks
+          issuer-uri: http://localhost:8084
+          audiences: payflow-api
+      # Calling the ledger and payment APIs: tokens for its own read-only client.
+      client:
+        registration:
+          payflow:
+            provider: payflow
+            client-id: reconciliation-service
+            client-secret: ${PAYFLOW_RECONCILIATION_CLIENT_SECRET:local-dev-reconciliation-secret}
+            authorization-grant-type: client_credentials
+            scope: ledger:admin,payments:audit
+        provider:
+          payflow:
+            token-uri: http://localhost:8084/oauth2/token
+
+payflow:
+  reconciliation:
+    # Daily at 02:00 UTC, for the previous day (see ReconciliationProperties).
+    cron: "0 0 2 * * *"
+    catch-up-days: 3
+    matching-margin: 1h
+    authorization-grace: 1h
+    refund-hold-stale-after: 1h
+    processor:
+      base-url: http://localhost:8086
+      api-key: ${PAYFLOW_PROCESSOR_API_KEY:local-dev-processor-key}
+    ledger:
+      base-url: http://localhost:8082
+    payments:
+      base-url: http://localhost:8080
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://localhost:4318/v1/traces
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+server:
+  shutdown: graceful
+  port: 8087

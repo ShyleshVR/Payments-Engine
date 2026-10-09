@@ -37,7 +37,7 @@ class MerchantAdminServiceImplTest {
         merchantRepository = mock(MerchantRepository.class);
         credentialRepository = mock(MerchantCredentialRepository.class);
         AuthProperties properties = new AuthProperties("http://localhost:8084", "payflow-api", Duration.ofMinutes(15), 2,
-                new AuthProperties.BootstrapAdmin("payflow-admin", "secret"));
+                new AuthProperties.BootstrapAdmin("payflow-admin", "secret"), java.util.List.of());
         service = new MerchantAdminServiceImpl(merchantRepository, credentialRepository, new CredentialGenerator(),
                 passwordEncoder, properties);
     }

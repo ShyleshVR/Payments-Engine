@@ -82,6 +82,8 @@ spec:
               value: http://ledger-service:8082
             - name: PAYFLOW_GATEWAY_ROUTES_WEBHOOK
               value: http://webhook-service:8083
+            - name: PAYFLOW_GATEWAY_ROUTES_RECONCILIATION
+              value: http://reconciliation-service:8087
           # Up to 3 minutes for the JVM, Flyway migrations and the rest of startup.
           startupProbe:
             httpGet: { path: /actuator/health/liveness, port: http }

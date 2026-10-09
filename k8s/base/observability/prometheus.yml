@@ -3,6 +3,16 @@
 # autoscaled ones) are picked up without editing this file.
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Alert rules (alerts.yml, unit-tested with promtool) and where firing alerts go.
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
 
 scrape_configs:
   - job_name: payflow-pods

@@ -1,0 +1,158 @@
+# PayFlow alert rules (Prometheus). Each alert has a one-line summary and a runbook: what it
+# means, why it matters and what to do are in docs/DEPLOYMENT.md#runbooks and
+# docs/RECONCILIATION.md#runbook. Tested with promtool (alerts.test.yml).
+# severity: critical = money or merchants affected now, act immediately;
+#           warning  = degraded or at risk, act during the day.
+groups:
+  - name: payflow-sagas
+    rules:
+      # A saga stopped on an outcome that must not be guessed; the payment waits for an operator.
+      - alert: SagaRequiresAttention
+        expr: max by (application) (sagas_requires_attention) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} saga(s) parked for an operator"
+          runbook: docs/DEPLOYMENT.md#runbooks
+
+      # Steps take seconds; one this old means the processor or the ledger isn't answering.
+      - alert: SagaStepStuck
+        expr: max by (application, type) (sagas_oldest_step_age_seconds) > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A {{ $labels.type }} saga step has been running for {{ $value | humanizeDuration }}"
+          runbook: docs/DEPLOYMENT.md#runbooks
+
+  - name: payflow-messaging
+    rules:
+      # Committed messages aren't reaching Kafka: events, webhooks and saga commands are delayed.
+      - alert: OutboxBacklog
+        expr: >-
+          (max by (application) (outbox_oldest_pending_age_seconds) > 120)
+          or (max by (application) (outbox_pending) > 1000)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.application }} outbox is not draining"
+          runbook: docs/DEPLOYMENT.md#runbooks
+
+      # A parked message blocks every later message of its payment.
+      - alert: OutboxMessageParked
+        expr: max by (application) (outbox_failed) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.application }} has {{ $value }} outbox message(s) that can never be published"
+          runbook: docs/DEPLOYMENT.md#runbooks
+
+      # Measured by kafka-exporter, so it fires even when every consumer is dead.
+      - alert: KafkaConsumerLag
+        expr: sum by (consumergroup, topic) (kafka_consumergroup_lag) > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.consumergroup }} is {{ $value }} messages behind on {{ $labels.topic }}"
+          runbook: docs/DEPLOYMENT.md#runbooks
+
+      # Messages nothing will ever process automatically.
+      - alert: DeadLettersArriving
+        expr: sum by (topic) (increase(kafka_topic_partition_current_offset{topic=~".+\\.DLT"}[10m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "New messages on {{ $labels.topic }}"
+          runbook: docs/DEPLOYMENT.md#runbooks
+
+  - name: payflow-dependencies
+    rules:
+      # kafka-exporter's scrape fails as soon as it can't reach the broker, so its target going down
+      # is the Kafka-down signal (there is no broker exporter). Outboxes keep accepting messages.
+      - alert: KafkaUnreachable
+        expr: max by (job) (up{job="kafka-exporter"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kafka is unreachable (kafka-exporter cannot read the broker)"
+          runbook: docs/DEPLOYMENT.md#runbooks
+
+      # New payments wait; after 2 minutes they are reversed and fail with processor_unavailable.
+      - alert: ProcessorCircuitOpen
+        expr: max by (application) (resilience4j_circuitbreaker_state{name="processor", state="open"}) == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The card processor circuit breaker is open"
+          runbook: docs/DEPLOYMENT.md#runbooks
+
+      # Every instance down, or no instance at all (scaled to zero, unschedulable): up has no
+      # series then, which only absent() on a plain selector can see (and it keeps the job label).
+      - alert: ServiceDown
+        expr: >-
+          max by (job) (up{job=~"api-gateway|merchant-service|payment-service|ledger-service|webhook-service|notification-service|processor-simulator|reconciliation-service"}) == 0
+          or absent(up{job="api-gateway"}) or absent(up{job="merchant-service"})
+          or absent(up{job="payment-service"}) or absent(up{job="ledger-service"})
+          or absent(up{job="webhook-service"}) or absent(up{job="notification-service"})
+          or absent(up{job="processor-simulator"}) or absent(up{job="reconciliation-service"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} has no healthy instance"
+          runbook: docs/DEPLOYMENT.md#runbooks
+
+      - alert: InstanceDown
+        expr: up{job!="kafka-exporter"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.pod }} ({{ $labels.job }}) is down"
+          runbook: docs/DEPLOYMENT.md#runbooks
+
+      - alert: GatewayErrorRate
+        expr: >-
+          sum(rate(http_server_requests_seconds_count{application="api-gateway", status=~"5.."}[5m]))
+          / sum(rate(http_server_requests_seconds_count{application="api-gateway"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of requests through the gateway fail with 5xx"
+          runbook: docs/DEPLOYMENT.md#runbooks
+
+  - name: payflow-reconciliation
+    rules:
+      # The processor, the ledger and payment-service disagree about money.
+      - alert: ReconciliationDiscrepancies
+        expr: max by (type) (reconciliation_discrepancies) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Reconciliation found {{ $value }} {{ $labels.type }} discrepancy(ies)"
+          runbook: docs/RECONCILIATION.md#runbook
+
+      - alert: ReconciliationNotRun
+        expr: time() - max(reconciliation_last_success_timestamp_seconds) > 26 * 3600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No successful reconciliation for over 26 hours"
+          runbook: docs/RECONCILIATION.md#runbook
+
+      # A source couldn't be read; the hourly catch-up retries the day.
+      - alert: ReconciliationRunFailed
+        expr: sum(increase(reconciliation_runs_total{status="FAILED"}[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A reconciliation run failed"
+          runbook: docs/RECONCILIATION.md#runbook

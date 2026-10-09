@@ -3,6 +3,8 @@ package com.shylesh.payment_service.controller;
 import com.shylesh.payment_service.common.identifier.IdentifierService;
 import com.shylesh.payment_service.dto.CreatePaymentRequest;
 import com.shylesh.payment_service.dto.PaymentResponse;
+import com.shylesh.payment_service.dto.PaymentAuditView;
+import com.shylesh.payment_service.dto.PaymentLookupRequest;
 import com.shylesh.payment_service.dto.SagaResponse;
 import com.shylesh.payment_service.exception.InvalidIdempotencyKeyException;
 import com.shylesh.payment_service.security.CurrentMerchant;
@@ -88,6 +90,19 @@ public class PaymentController {
         UUID id = identifierService.parsePaymentId(paymentId);
 
         return ResponseEntity.accepted().body(paymentService.refundPayment(merchantId, id));
+    }
+
+    /**
+     * Audit: many payments at once, by public id (unknown ids are left out). Used by the daily
+     * reconciliation; read-only, so the audit scope suffices.
+     */
+    @PostMapping("/lookup")
+    @PreAuthorize("hasAnyAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_AUDIT, T(com.shylesh.payment_service.security.Scopes).PAYMENTS_OPERATE)")
+    public ResponseEntity<List<PaymentAuditView>> lookupPayments(@Valid @RequestBody PaymentLookupRequest request) {
+
+        List<UUID> ids = request.paymentIds().stream().map(identifierService::parsePaymentId).distinct().toList();
+
+        return ResponseEntity.ok(paymentService.lookupPayments(ids));
     }
 
     /** Operator: the payment's sagas with their step history. */

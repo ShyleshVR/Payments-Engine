@@ -35,7 +35,10 @@ class MerchantRegisteredClientRepositoryTest {
         credentialRepository = mock(MerchantCredentialRepository.class);
         merchantRepository = mock(MerchantRepository.class);
         AuthProperties properties = new AuthProperties("http://localhost:8084", "payflow-api", Duration.ofMinutes(15), 2,
-                new AuthProperties.BootstrapAdmin("payflow-admin", "admin-secret"));
+                new AuthProperties.BootstrapAdmin("payflow-admin", "admin-secret"),
+                java.util.List.of(new AuthProperties.ServiceClient("reconciliation-service", "recon-secret",
+                                java.util.Set.of("ledger:admin", "payments:audit")),
+                        new AuthProperties.ServiceClient("not-deployed", "", java.util.Set.of("payments:audit"))));
         repository = new MerchantRegisteredClientRepository(credentialRepository, merchantRepository, properties, passwordEncoder);
 
         merchant = Merchant.builder().id(UUID.randomUUID()).name("Acme").email("a@acme.test").status(MerchantStatus.ACTIVE)
@@ -45,6 +48,39 @@ class MerchantRegisteredClientRepositoryTest {
         when(credentialRepository.findByClientId("mch_abc")).thenReturn(Optional.of(credential));
         when(credentialRepository.findById(credential.getId())).thenReturn(Optional.of(credential));
         when(merchantRepository.findById(merchant.getId())).thenReturn(Optional.of(merchant));
+    }
+
+    private static AuthProperties withServiceClient(AuthProperties.ServiceClient client) {
+        return new AuthProperties("http://localhost:8084", "payflow-api", Duration.ofMinutes(15), 2,
+                new AuthProperties.BootstrapAdmin("payflow-admin", "admin-secret"), java.util.List.of(client));
+    }
+
+    @Test
+    void serviceClientGetsOnlyItsConfiguredScopesAndNoMerchant() {
+        RegisteredClient client = repository.findByClientId("reconciliation-service");
+
+        assertThat(client).isNotNull();
+        assertThat(client.getScopes()).containsExactlyInAnyOrder("ledger:admin", "payments:audit");
+        assertThat((String) client.getClientSettings().getSetting(MerchantRegisteredClientRepository.MERCHANT_ID_SETTING)).isNull();
+        assertThat(passwordEncoder.matches("recon-secret", client.getClientSecret())).isTrue();
+        assertThat(repository.findById(client.getId())).isSameAs(client);
+    }
+
+    @Test
+    void serviceClientWithoutASecretIsNotRegistered() {
+        assertThat(repository.findByClientId("not-deployed")).isNull();
+    }
+
+    @Test
+    void serviceClientsCanNeverHoldMerchantScopes() {
+        assertThatThrownBy(() -> new MerchantRegisteredClientRepository(credentialRepository, merchantRepository,
+                withServiceClient(new AuthProperties.ServiceClient("sneaky", "s", java.util.Set.of("payments:write"))), passwordEncoder))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("sneaky");
+        assertThatThrownBy(() -> new MerchantRegisteredClientRepository(credentialRepository, merchantRepository,
+                withServiceClient(new AuthProperties.ServiceClient("payflow-admin", "s", java.util.Set.of("payments:audit"))), passwordEncoder))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Duplicate");
     }
 
     @Test

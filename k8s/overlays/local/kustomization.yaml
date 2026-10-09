@@ -15,6 +15,7 @@ images:
   - { name: payflow/merchant-service, newTag: local }
   - { name: payflow/payment-service, newTag: local }
   - { name: payflow/processor-simulator, newTag: local }
+  - { name: payflow/reconciliation-service, newTag: local }
   - { name: payflow/ledger-service, newTag: local }
   - { name: payflow/notification-service, newTag: local }
   - { name: payflow/webhook-service, newTag: local }
@@ -33,15 +34,15 @@ secretGenerator:
       - signing-key.pem=secrets/signing-key.pem
 
 patches:
-  # Grafana, Prometheus and Jaeger UIs on http://localhost:3000, :9090 and :16686.
-  - target: { kind: Service, name: "grafana|prometheus|jaeger" }
+  # Grafana, Prometheus, Jaeger and Alertmanager UIs on http://localhost:3000, :9090, :16686, :9093.
+  - target: { kind: Service, name: "grafana|prometheus|jaeger|alertmanager" }
     patch: |-
       - op: add
         path: /spec/type
         value: LoadBalancer
   # Smaller memory requests than the base (512Mi): these JVMs use ~300-400Mi, and a single
   # Docker Desktop node must fit 16 application pods plus a rollout's surge pods.
-  - target: { kind: Deployment, name: "api-gateway|merchant-service|payment-service|processor-simulator|ledger-service|notification-service|webhook-service" }
+  - target: { kind: Deployment, name: "api-gateway|merchant-service|payment-service|processor-simulator|reconciliation-service|ledger-service|notification-service|webhook-service" }
     patch: |-
       - op: replace
         path: /spec/template/spec/containers/0/resources/requests/memory
