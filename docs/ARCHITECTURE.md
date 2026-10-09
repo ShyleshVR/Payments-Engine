@@ -4,7 +4,8 @@ PayFlow takes card payments for merchants:
 - it authorizes and captures them against a card processor;
 - it books them in a double-entry ledger;
 - it refunds them;
-- it tells merchants (webhooks) and customers (notifications) what happened.
+- it tells merchants (webhooks) and customers (notifications) what happened;
+- every night, it checks its books against the processor's.
 
 The design goal is **correct money movement under failure**. Any request, message, pod or
 dependency can fail or repeat at any point, and no payment may be charged twice, booked twice,
@@ -31,12 +32,17 @@ flowchart LR
     K -- payment events --> WS
     K -- payment events --> NS[notification-service<br/>customer emails]
     WS -->|signed POST| ME([Merchant endpoint])
+    GW --> RS[reconciliation-service<br/>daily three-way check]
+    RS -.->|settlement report| PR
+    RS -.->|transactions| LS
+    RS -.->|payment statuses| PS
     PS --- PG1[(Postgres)]
     LS --- PG2[(Postgres)]
     MS --- PG3[(Postgres)]
     WS --- PG4[(Postgres)]
     NS --- PG5[(Postgres)]
     PR --- PG6[(Postgres)]
+    RS --- PG7[(Postgres)]
     GW --- R[(Redis)]
     PS --- R
 ```
@@ -50,9 +56,10 @@ flowchart LR
 | **ledger-service** | accounts, transactions, entries, processed commands, outbox | payment-service (Kafka replies) | gateway: `/api/v1/ledger/**` |
 | **webhook-service** | subscriptions (with signing secrets), deliveries, attempts | merchant endpoints (HTTPS) | gateway: `/api/v1/webhooks/**` |
 | **notification-service** | notifications, delivery attempts | email channel (stub) | no API |
+| **reconciliation-service** | reconciliation runs and discrepancies, scheduler lock | processor (report), ledger and payment-service (read-only APIs, its own OAuth2 client) | gateway: `/api/v1/reconciliation/**` |
 
 Each service has its own database and user; nothing reads another service's tables. Locally,
-the six databases share one Postgres instance to save memory; in production each would be its
+the seven databases share one Postgres instance to save memory; in production each would be its
 own managed instance. Redis holds only data that can be lost: rate-limit buckets, and an
 idempotency cache backed by the database.
 
@@ -125,7 +132,10 @@ out after it took effect. The system is built so that none of this changes the o
 
 This was checked on the live cluster by reconciling every payment across the payment, processor
 and ledger databases after outages and pod kills. All three agreed every time (see
-[SAGA.md](SAGA.md#cluster-verification)).
+[SAGA.md](SAGA.md#cluster-verification)). That check now runs **every day** in production form:
+reconciliation-service reads the processor's settlement report, the ledger's transactions and
+payment-service's statuses through APIs (never their databases), reports each disagreement by
+type, and alerts until the day is clean ([RECONCILIATION.md](RECONCILIATION.md)).
 
 ## Failure handling
 
@@ -168,17 +178,25 @@ and ledger databases after outages and pod kills. All three agreed every time (s
   requests.
 - **Availability during disruption.** PodDisruptionBudgets for every service, and a priority
   class so Postgres, Kafka and Redis are always scheduled first.
-- **Infrastructure in the cluster.** Postgres, Kafka in KRaft mode, Redis, Prometheus, Grafana
-  and Jaeger.
-- **CI on every push and pull request.** GitHub Actions runs all seven test suites, builds the
-  images, and validates the rendered manifests against the Kubernetes API schemas.
+- **Infrastructure in the cluster.** Postgres, Kafka in KRaft mode, Redis, Prometheus,
+  Alertmanager, Grafana, Jaeger and a Kafka exporter.
+- **CI on every push and pull request.** GitHub Actions runs all eight test suites, builds the
+  images, unit-tests the alert rules, checks the Alertmanager configuration, and validates the
+  rendered manifests against the Kubernetes API schemas.
 
 ## Observability
 
 - **Metrics:** each service exposes Prometheus metrics, and Prometheus finds the pods itself.
   Business and saga metrics include payments by status, sagas by outcome, saga duration,
   processor calls by outcome, circuit-breaker state, parked sagas, ledger commands, webhook and
-  notification delivery, and outbox lag.
+  notification delivery, outbox backlog and age, the oldest running saga step, and reconciliation
+  results. Consumer lag comes from a Kafka exporter, so it shows even when every consumer is dead.
+- **Alerting:** Prometheus rules for stuck or parked sagas, outbox backlog, consumer lag, dead
+  letters, an open circuit breaker, services or replicas down, gateway errors and reconciliation.
+  Every rule is unit-tested with `promtool`. Alertmanager groups them, suppresses a service's
+  warnings while the whole service is down, and delivers them to an in-cluster receiver, or Slack
+  when a webhook URL is configured. Each alert links a runbook
+  ([DEPLOYMENT.md](DEPLOYMENT.md#alerting)).
 - **Dashboard:** one provisioned Grafana dashboard.
 - **Traces:** one Jaeger trace per payment, from the API call through every service and Kafka hop.
 
@@ -188,10 +206,12 @@ and ledger databases after outages and pod kills. All three agreed every time (s
 |---|---|
 | Unit | State-machine rules (29 tests: every transition, compensation and timeout), parsers, policies, idempotency fingerprints |
 | Integration (Testcontainers) | Real Postgres, Kafka and Redis: the saga against a stub processor and a stub ledger (15 scenarios), ledger concurrency, the processor's idempotency under 8 concurrent duplicates, the authorization server, the gateway in front of a real upstream |
-| Live cluster | Every test card end to end; processor outage under load; ledger scaled to zero; pods force-killed; rolling restarts under traffic; autoscaling under load; a reconciliation of every payment across three databases |
+| Live cluster | Every test card end to end; processor outage under load; ledger scaled to zero; pods force-killed; rolling restarts under traffic; autoscaling under load; a reconciliation of every payment across three databases; a simulated incident in which each alert fired and resolved; injected corruption caught by the daily reconciliation |
 
-319 automated tests run in CI. Results of the cluster runs are recorded in
-[DEPLOYMENT.md](DEPLOYMENT.md#testing) and [SAGA.md](SAGA.md#cluster-verification).
+359 automated tests run in CI, along with the alert-rule tests. Results of the cluster runs are
+recorded in [DEPLOYMENT.md](DEPLOYMENT.md#testing), [SAGA.md](SAGA.md#cluster-verification),
+[DEPLOYMENT.md](DEPLOYMENT.md#verified-on-the-cluster) (alerts) and
+[RECONCILIATION.md](RECONCILIATION.md#on-the-cluster).
 
 ## Read more
 
@@ -199,4 +219,5 @@ and ledger databases after outages and pod kills. All three agreed every time (s
 - [SAGA.md](SAGA.md): sagas, compensation, processor and ledger protocols
 - [MERCHANT_AUTH.md](MERCHANT_AUTH.md): authentication and authorization
 - [WEBHOOK_SERVICE.md](WEBHOOK_SERVICE.md): webhook delivery
-- [DEPLOYMENT.md](DEPLOYMENT.md): Kubernetes, gateway and CI
+- [RECONCILIATION.md](RECONCILIATION.md): the daily reconciliation
+- [DEPLOYMENT.md](DEPLOYMENT.md): Kubernetes, gateway, alerting and CI

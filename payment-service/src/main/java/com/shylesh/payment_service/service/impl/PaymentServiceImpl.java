@@ -2,6 +2,7 @@ package com.shylesh.payment_service.service.impl;
 
 import com.shylesh.payment_service.dto.CreatePaymentRequest;
 import com.shylesh.payment_service.dto.PaymentResponse;
+import com.shylesh.payment_service.dto.PaymentAuditView;
 import com.shylesh.payment_service.dto.SagaResponse;
 import com.shylesh.payment_service.entity.Payment;
 import com.shylesh.payment_service.entity.PaymentStatus;
@@ -213,6 +214,19 @@ public class PaymentServiceImpl implements PaymentService {
     public List<SagaResponse> retrySaga(UUID paymentId) {
         sagaOrchestrator.retry(paymentId);
         return getSagas(paymentId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<PaymentAuditView> lookupPayments(List<UUID> paymentIds) {
+        java.util.Set<UUID> inFlight = new java.util.HashSet<>(sagaRepository.findPaymentIdsWithActiveSaga(paymentIds));
+        return paymentRepository.findAllById(paymentIds).stream()
+                .map(p -> new PaymentAuditView("pay_" + p.getId(), p.getStatus().name(), p.getAmount(), p.getCurrency(),
+                        p.getCaptureMethod() == null ? null : p.getCaptureMethod().name(),
+                        p.getFailureCode(), p.getRefundFailureCode(), inFlight.contains(p.getId()),
+                        p.getPaymentMethod() != null,
+                        p.getCreatedAt(), p.getUpdatedAt()))
+                .toList();
     }
 
     private SagaResponse toResponse(PaymentSaga saga) {

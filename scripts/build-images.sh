@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 
 SERVICES=("$@")
 if [ ${#SERVICES[@]} -eq 0 ]; then
-  SERVICES=(payment-service notification-service ledger-service webhook-service merchant-service api-gateway processor-simulator)
+  SERVICES=(payment-service notification-service ledger-service webhook-service merchant-service api-gateway processor-simulator reconciliation-service)
 fi
 
 for svc in "${SERVICES[@]}"; do

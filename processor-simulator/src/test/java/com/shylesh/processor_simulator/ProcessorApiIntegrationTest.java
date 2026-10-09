@@ -305,6 +305,52 @@ class ProcessorApiIntegrationTest {
     }
 
     @Test
+    void settlementReportListsWhatMoneyDidInThePeriod() throws Exception {
+        String captured = captured("pm_card_visa");
+        String voided = authorized("pm_card_capture_fails");
+        call("/v1/authorizations/" + voided + "/void", key(), null);
+        String refunded = captured("pm_card_visa");
+        call("/v1/refunds", key(), "{\"authorizationId\":\"" + refunded + "\",\"amount\":30.00}");
+        String from = java.time.LocalDateTime.now().minusHours(1).toString();
+        String to = java.time.LocalDateTime.now().plusHours(1).toString();
+
+        JsonNode report = objectMapper.readTree(mockMvc.perform(get("/v1/reports/settlement")
+                        .param("from", from).param("to", to).header("X-Api-Key", "test-key"))
+                .andReturn().getResponse().getContentAsString());
+
+        java.util.Map<String, JsonNode> byId = new java.util.HashMap<>();
+        report.get("authorizations").forEach(a -> byId.put(a.get("id").asText(), a));
+        assertThat(byId.get(captured).get("status").asText()).isEqualTo("CAPTURED");
+        assertThat(byId.get(captured).get("capturedAt").isNull()).isFalse();
+        assertThat(byId.get(captured).get("reference").asText()).isEqualTo("pay_test");
+        assertThat(byId.get(voided).get("status").asText()).isEqualTo("VOIDED");
+        assertThat(byId.get(voided).get("voidedAt").isNull()).isFalse();
+        assertThat(byId.get(refunded).get("refundedAmount").decimalValue()).isEqualByComparingTo("30.00");
+        JsonNode refund = null;
+        for (JsonNode r : report.get("refunds")) {
+            if (r.get("authorizationId").asText().equals(refunded)) {
+                refund = r;
+            }
+        }
+        assertThat(refund).isNotNull();
+        assertThat(refund.get("reference").asText()).isEqualTo("pay_test");
+        assertThat(refund.get("currency").asText()).isEqualTo("USD");
+    }
+
+    @Test
+    void settlementReportRejectsAnInvalidPeriod() throws Exception {
+        int reversed = mockMvc.perform(get("/v1/reports/settlement").header("X-Api-Key", "test-key")
+                        .param("from", "2026-10-09T00:00:00").param("to", "2026-10-08T00:00:00"))
+                .andReturn().getResponse().getStatus();
+        int tooLong = mockMvc.perform(get("/v1/reports/settlement").header("X-Api-Key", "test-key")
+                        .param("from", "2026-10-01T00:00:00").param("to", "2026-10-09T00:00:00"))
+                .andReturn().getResponse().getStatus();
+
+        assertThat(reversed).isEqualTo(400);
+        assertThat(tooLong).isEqualTo(400);
+    }
+
+    @Test
     void apiKeyAndIdempotencyKeyAreRequired() throws Exception {
         int noApiKey = mockMvc.perform(post("/v1/authorizations").contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andReturn().getResponse().getStatus();

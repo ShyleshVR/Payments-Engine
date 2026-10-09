@@ -10,12 +10,10 @@
 | Merchant identity | OAuth2 authorization server, client credentials, JWT, scopes, data ownership | [MERCHANT_AUTH.md](MERCHANT_AUTH.md) |
 | Kubernetes and gateway | API gateway, Kustomize deployment, autoscaling, probes, CI | [DEPLOYMENT.md](DEPLOYMENT.md) |
 | Sagas | Processor integration (simulator), orchestrated payment and refund sagas, ledger commands, one trace per payment | [SAGA.md](SAGA.md) |
+| Alerting and reconciliation | Prometheus alert rules (promtool-tested) and Alertmanager with runbooks; reconciliation-service: daily three-way reconciliation of processor, ledger and payments | [RECONCILIATION.md](RECONCILIATION.md), [DEPLOYMENT.md](DEPLOYMENT.md#alerting) |
 
 ## Next candidates
 
-- **Alerting and reconciliation:** Prometheus alert rules (parked sagas, outbox lag, consumer
-  lag, open circuit breaker) with Alertmanager, and a scheduled reconciliation job between
-  processor and ledger.
 - **Merchant payouts:** pay out settled balances in batches, as a saga; completes the money flow.
 - **Engineering cleanup:**
   - a shared event-contract module or schema registry;

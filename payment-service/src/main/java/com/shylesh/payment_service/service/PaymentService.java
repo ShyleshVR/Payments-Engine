@@ -1,6 +1,7 @@
 package com.shylesh.payment_service.service;
 
 import com.shylesh.payment_service.dto.CreatePaymentRequest;
+import com.shylesh.payment_service.dto.PaymentAuditView;
 import com.shylesh.payment_service.dto.PaymentResponse;
 import com.shylesh.payment_service.dto.SagaResponse;
 
@@ -27,4 +28,7 @@ public interface PaymentService {
 
     /** Operator: resume a saga parked in REQUIRES_ATTENTION. */
     List<SagaResponse> retrySaga(UUID paymentId);
+
+    /** Audit: any payments by id (unknown ids are left out). */
+    List<PaymentAuditView> lookupPayments(List<UUID> paymentIds);
 }

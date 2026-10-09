@@ -1,0 +1,6 @@
+# Scripts must keep LF line endings in every checkout: they run in Linux containers (mounted from
+# ConfigMaps) and in CI, where a CRLF ending breaks bash ("set: pipefail: invalid option name").
+*.sh  text eol=lf
+*.py  text eol=lf
+# Container and CI configuration read by Linux tools.
+Dockerfile text eol=lf

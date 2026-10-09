@@ -113,6 +113,9 @@ class SagaIntegrationTest {
     @Autowired
     private CircuitBreakerRegistry circuitBreakerRegistry;
 
+    @Autowired
+    private io.micrometer.core.instrument.MeterRegistry meterRegistry;
+
     private final UUID merchantId = UUID.randomUUID();
 
     private StubLedger ledger() {
@@ -178,6 +181,27 @@ class SagaIntegrationTest {
         assertThat(commandTypes(paymentId)).containsExactly("SETTLE_PAYMENT");
         assertThat(events(paymentId)).containsExactly("PAYMENT_CREATED", "PAYMENT_COMPLETED");
         assertThat(paymentRepository.findById(paymentId).orElseThrow().getProcessorAuthorizationId()).startsWith("auth_");
+    }
+
+    @Test
+    void auditLookupShowsWhetherASagaIsStillRunning() {
+        ledger().pauseReplies();
+        UUID paymentId = pay("pm_card_visa", CaptureMethod.AUTOMATIC);
+        await().atMost(Duration.ofSeconds(10)).until(() -> saga(paymentId, SagaType.PAYMENT).getState() == SagaState.SETTLING);
+
+        assertThat(paymentService.lookupPayments(List.of(paymentId)).getFirst().sagaActive()).isTrue();
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                meterRegistry.get("sagas.oldest.step.age").tag("type", "PAYMENT").gauge().value() >= 1);
+        assertThat(meterRegistry.get("outbox.pending").gauge().value()).isGreaterThanOrEqualTo(0);
+
+        ledger().resumeReplies();
+        awaitStatus(paymentId, PaymentStatus.SUCCESS);
+        var view = paymentService.lookupPayments(List.of(paymentId, UUID.randomUUID()));
+        assertThat(view).hasSize(1);
+        assertThat(view.getFirst().sagaActive()).isFalse();
+        assertThat(view.getFirst().processorBacked()).isTrue();
+        assertThat(view.getFirst().status()).isEqualTo("SUCCESS");
+        assertThat(view.getFirst().paymentId()).isEqualTo("pay_" + paymentId);
     }
 
     @Test

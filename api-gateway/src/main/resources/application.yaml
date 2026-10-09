@@ -70,6 +70,11 @@ spring:
               uri: ${payflow.gateway.routes.webhook}
               predicates:
                 - Path=/api/v1/webhooks/**
+            # Operator API of the daily reconciliation.
+            - id: reconciliation-service
+              uri: ${payflow.gateway.routes.reconciliation}
+              predicates:
+                - Path=/api/v1/reconciliation/**
 
 payflow:
   gateway:
@@ -79,6 +84,7 @@ payflow:
       payment: http://localhost:8080
       ledger: http://localhost:8082
       webhook: http://localhost:8083
+      reconciliation: http://localhost:8087
     rate-limit:
       # Sustained requests per second per caller, and how many can arrive at once.
       replenish-rate: 20

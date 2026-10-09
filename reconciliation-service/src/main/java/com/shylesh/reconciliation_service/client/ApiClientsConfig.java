@@ -1,0 +1,76 @@
+package com.shylesh.reconciliation_service.client;
+
+import com.shylesh.reconciliation_service.config.ReconciliationProperties;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.core.authority.AuthorityUtils;
+import org.springframework.security.oauth2.client.AuthorizedClientServiceOAuth2AuthorizedClientManager;
+import org.springframework.security.oauth2.client.OAuth2AuthorizedClientManager;
+import org.springframework.security.oauth2.client.OAuth2AuthorizedClientProviderBuilder;
+import org.springframework.security.oauth2.client.OAuth2AuthorizedClientService;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.oauth2.client.web.client.OAuth2ClientHttpRequestInterceptor;
+import org.springframework.web.client.RestClient;
+
+import java.net.http.HttpClient;
+import java.time.Duration;
+
+/**
+ * HTTP clients for the three sources. The ledger and payment APIs are called with an OAuth2
+ * token for this service's own client (client credentials: obtained, cached and renewed by the
+ * authorized-client manager, outside any user request); the processor takes its API key.
+ */
+@Configuration
+public class ApiClientsConfig {
+
+    static final String REGISTRATION_ID = "payflow";
+
+    @Bean
+    public OAuth2AuthorizedClientManager authorizedClientManager(ClientRegistrationRepository registrations,
+                                                                 OAuth2AuthorizedClientService clientService) {
+        AuthorizedClientServiceOAuth2AuthorizedClientManager manager =
+                new AuthorizedClientServiceOAuth2AuthorizedClientManager(registrations, clientService);
+        manager.setAuthorizedClientProvider(OAuth2AuthorizedClientProviderBuilder.builder().clientCredentials().build());
+        return manager;
+    }
+
+    @Bean
+    public RestClient ledgerRestClient(RestClient.Builder builder, ReconciliationProperties properties,
+                                       OAuth2AuthorizedClientManager manager) {
+        return withToken(builder.clone(), manager).baseUrl(properties.ledger().baseUrl()).build();
+    }
+
+    @Bean
+    public RestClient paymentsRestClient(RestClient.Builder builder, ReconciliationProperties properties,
+                                         OAuth2AuthorizedClientManager manager) {
+        return withToken(builder.clone(), manager).baseUrl(properties.payments().baseUrl()).build();
+    }
+
+    @Bean
+    public RestClient processorRestClient(RestClient.Builder builder, ReconciliationProperties properties) {
+        return builder.clone()
+                .requestFactory(requestFactory())
+                .baseUrl(properties.processor().baseUrl())
+                .defaultHeader("X-Api-Key", properties.processor().apiKey())
+                .build();
+    }
+
+    private static RestClient.Builder withToken(RestClient.Builder builder, OAuth2AuthorizedClientManager manager) {
+        OAuth2ClientHttpRequestInterceptor interceptor = new OAuth2ClientHttpRequestInterceptor(manager);
+        interceptor.setClientRegistrationIdResolver(request -> REGISTRATION_ID);
+        // the job runs outside any request: tokens belong to this service, not to a caller
+        interceptor.setPrincipalResolver(request -> new AnonymousAuthenticationToken(
+                "reconciliation", "reconciliation-service", AuthorityUtils.createAuthorityList("ROLE_SERVICE")));
+        return builder.requestFactory(requestFactory()).requestInterceptor(interceptor);
+    }
+
+    private static JdkClientHttpRequestFactory requestFactory() {
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(
+                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build());
+        factory.setReadTimeout(Duration.ofSeconds(30));
+        return factory;
+    }
+}

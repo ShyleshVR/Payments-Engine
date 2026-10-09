@@ -31,7 +31,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * The real authorization server against a real Postgres (Testcontainers): token issuance,
  * claims, scope enforcement on the admin API, revocation, suspension, rotation limit, JWKS.
  */
-@SpringBootTest(properties = "management.tracing.enabled=false")
+@SpringBootTest(properties = {
+        "management.tracing.enabled=false",
+        // a list property is replaced as a whole, so the entry is given in full
+        "payflow.auth.service-clients[0].client-id=reconciliation-service",
+        "payflow.auth.service-clients[0].client-secret=recon-secret",
+        "payflow.auth.service-clients[0].scopes=ledger:admin,payments:audit"
+})
 @AutoConfigureMockMvc
 @Testcontainers
 class AuthorizationServerIntegrationTest {
@@ -102,6 +108,19 @@ class AuthorizationServerIntegrationTest {
         assertThat(claims.get("aud").toString()).contains("payflow-api");
         assertThat(claims.get("scope").toString()).contains("merchants:admin", "payments:operate", "ledger:admin");
         assertThat(claims.has("merchant_id")).isFalse();
+    }
+
+    @Test
+    void serviceClientGetsOnlyItsReadOnlyScopes() throws Exception {
+        String serviceToken = token("reconciliation-service", "recon-secret");
+        JsonNode claims = claims(serviceToken);
+
+        assertThat(claims.get("scope").toString()).contains("ledger:admin", "payments:audit")
+                .doesNotContain("merchants:admin", "payments:operate", "payments:write");
+        assertThat(claims.has("merchant_id")).isFalse();
+        assertThat(tokenRequest("reconciliation-service", "recon-secret", "merchants:admin").getResponse().getStatus()).isEqualTo(400);
+        assertThat(mockMvc.perform(get("/api/v1/merchants/" + UUID.randomUUID())
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + serviceToken)).andReturn().getResponse().getStatus()).isEqualTo(403);
     }
 
     @Test

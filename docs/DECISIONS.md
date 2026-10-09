@@ -6,7 +6,7 @@ linked documents; the identifier scheme also has its own record, [ADR-001](adr/A
 ## Architecture
 
 ### 1. Microservices with a database per service
-- **Decision:** seven services, each with its own database and credentials; nothing reads
+- **Decision:** eight services, each with its own database and credentials; nothing reads
   another service's tables.
 - **Why:** services evolve and scale independently, and a ledger bug can't corrupt payment data.
   It also forces the hard problem (consistency across services) into the open, where it is
@@ -149,7 +149,7 @@ linked documents; the identifier scheme also has its own record, [ADR-001](adr/A
   Redis, Prometheus, Grafana and Jaeger all run in the cluster.
 - **Why:** the whole system comes up with one script and behaves like a real deployment
   (replicas, probes, rolling updates, autoscaling).
-- **Cost:** one Kafka broker (replication factor 1) and one Postgres instance hosting six
+- **Cost:** one Kafka broker (replication factor 1) and one Postgres instance hosting seven
   databases: no infrastructure fault tolerance locally. Production would use 3+ brokers and
   managed databases. Dev secrets are generated locally rather than coming from a secret manager.
 
@@ -162,3 +162,40 @@ linked documents; the identifier scheme also has its own record, [ADR-001](adr/A
 - **Cost:** random keys spread inserts across the primary-key index. Time-ordered UUIDv7 would
   insert near the end instead, which matters at high write rates; switching is a change to the
   generator alone. [ADR-001](adr/ADR-001-payment-identifier.md)
+
+## Operations
+
+### 19. A daily three-way reconciliation, as its own service, through APIs
+- **Decision:** reconciliation-service compares the processor's settlement report, the ledger's
+  transactions and payment-service's statuses for each business day. It reads them through
+  read-only APIs with its own least-privilege OAuth2 client, never their databases. A pure
+  function does the matching; runs and discrepancies are stored and served by an operator API.
+- **Why:** the sagas are designed so the three never disagree, but bugs, manual fixes and
+  partner errors happen in production, and the processor's records decide what customers were
+  charged. An independent daily check is the control that catches what the design missed.
+  Reading through APIs keeps database-per-service true for operations too and matches how a
+  real processor is reconciled (a report, not a table).
+- **Cost:** one more deployment and database; new read endpoints in three services; a day is
+  checked only after it closes (plus a one-hour margin), so a discrepancy surfaces the next
+  morning, not in real time. Real-time problems have their own alerts (parked sagas, stuck steps).
+- **Alternatives:** a Kubernetes CronJob (short-lived pods can't be scraped without a
+  Pushgateway, and it has no API or run history); a job inside the ledger (it would have to
+  trust its own books); reading the databases directly (simpler, but couples the job to three
+  schemas). [RECONCILIATION.md](RECONCILIATION.md)
+
+### 20. Alerts on symptoms, unit-tested, with a runbook each
+- **Decision:** Prometheus rules for what an operator must act on: a parked or stuck saga, an
+  outbox backlog or parked message, consumer lag, dead letters, an open circuit breaker,
+  services or replicas down, gateway errors, reconciliation discrepancies or missed runs.
+  Every rule has a `promtool` unit test and a runbook. Alertmanager suppresses a service's
+  warnings while the whole service is down. Locally, notifications go to an in-cluster receiver;
+  Slack is added only when a webhook URL is provided.
+- **Why:** metrics nobody watches don't prevent incidents. Testing the rules catches the classic
+  mistakes, such as an alert that loses its labels or never fires when a service has no pods at
+  all. Consumer lag comes from a Kafka exporter rather than the consumers themselves, so it shows
+  even when every consumer is dead.
+- **Cost:** thresholds are tuned for a demo and would need real traffic data; there is no
+  paging or on-call rotation behind the receiver.
+- **Alternatives:** Grafana-managed alerts (tied to the dashboard tool, harder to test in CI); a
+  hosted monitoring service (nothing to run, but the setup would leave the repository).
+  [DEPLOYMENT.md](DEPLOYMENT.md#alerting)

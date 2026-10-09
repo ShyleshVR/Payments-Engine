@@ -19,6 +19,8 @@ import org.springframework.security.oauth2.server.authorization.settings.OAuth2T
 import org.springframework.security.oauth2.server.authorization.settings.TokenSettings;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -41,11 +43,13 @@ public class MerchantRegisteredClientRepository implements RegisteredClientRepos
 
     private static final String ADMIN_REGISTRATION_ID = "bootstrap-admin";
     private static final String LOCAL_DEV_ADMIN_SECRET = "local-dev-admin-secret";
+    private static final String SERVICE_REGISTRATION_PREFIX = "service-";
 
     private final MerchantCredentialRepository credentialRepository;
     private final MerchantRepository merchantRepository;
     private final AuthProperties properties;
-    private final RegisteredClient adminClient;
+    /** The admin and service clients, from configuration, by client id. */
+    private final Map<String, RegisteredClient> configuredClients = new LinkedHashMap<>();
 
     public MerchantRegisteredClientRepository(
             MerchantCredentialRepository credentialRepository,
@@ -63,7 +67,31 @@ public class MerchantRegisteredClientRepository implements RegisteredClientRepos
         if (LOCAL_DEV_ADMIN_SECRET.equals(admin.clientSecret())) {
             log.warn("Bootstrap admin client is using the local development secret; set PAYFLOW_ADMIN_CLIENT_SECRET outside local development");
         }
-        this.adminClient = client(ADMIN_REGISTRATION_ID, admin.clientId(), passwordEncoder.encode(admin.clientSecret()), Scopes.ADMIN, null);
+        configuredClients.put(admin.clientId(),
+                client(ADMIN_REGISTRATION_ID, admin.clientId(), passwordEncoder.encode(admin.clientSecret()), Scopes.ADMIN, null));
+
+        for (AuthProperties.ServiceClient service : properties.serviceClients()) {
+            if (isBlank(service.clientId()) || service.scopes() == null || service.scopes().isEmpty()) {
+                throw new IllegalStateException("payflow.auth.service-clients entries need a client-id and scopes");
+            }
+            if (!Scopes.SERVICE_ASSIGNABLE.containsAll(service.scopes())) {
+                throw new IllegalStateException("Service client " + service.clientId() + " may only have "
+                        + Scopes.SERVICE_ASSIGNABLE + ", not " + service.scopes());
+            }
+            if (configuredClients.containsKey(service.clientId())) {
+                throw new IllegalStateException("Duplicate client id " + service.clientId());
+            }
+            if (isBlank(service.clientSecret())) {
+                log.warn("Service client {} has no secret configured and is not registered", service.clientId());
+                continue;
+            }
+            configuredClients.put(service.clientId(), client(SERVICE_REGISTRATION_PREFIX + service.clientId(),
+                    service.clientId(), passwordEncoder.encode(service.clientSecret()), service.scopes(), null));
+            log.info("Service client {} registered with scopes {}", service.clientId(), service.scopes());
+            if (service.clientSecret().startsWith("local-dev-")) {
+                log.warn("Service client {} is using a local development secret", service.clientId());
+            }
+        }
     }
 
     @Override
@@ -73,8 +101,10 @@ public class MerchantRegisteredClientRepository implements RegisteredClientRepos
 
     @Override
     public RegisteredClient findById(String id) {
-        if (adminClient.getId().equals(id)) {
-            return adminClient;
+        for (RegisteredClient configured : configuredClients.values()) {
+            if (configured.getId().equals(id)) {
+                return configured;
+            }
         }
         UUID credentialId;
         try {
@@ -87,8 +117,9 @@ public class MerchantRegisteredClientRepository implements RegisteredClientRepos
 
     @Override
     public RegisteredClient findByClientId(String clientId) {
-        if (adminClient.getClientId().equals(clientId)) {
-            return adminClient;
+        RegisteredClient configured = configuredClients.get(clientId);
+        if (configured != null) {
+            return configured;
         }
         return credentialRepository.findByClientId(clientId).map(this::toRegisteredClient).orElse(null);
     }
