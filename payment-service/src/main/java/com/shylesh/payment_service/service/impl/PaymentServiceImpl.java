@@ -2,6 +2,7 @@ package com.shylesh.payment_service.service.impl;
 
 import com.shylesh.payment_service.dto.CreatePaymentRequest;
 import com.shylesh.payment_service.dto.PaymentResponse;
+import com.shylesh.payment_service.dto.SagaResponse;
 import com.shylesh.payment_service.entity.Payment;
 import com.shylesh.payment_service.entity.PaymentStatus;
 import com.shylesh.payment_service.mapper.PaymentMapper;
@@ -12,7 +13,13 @@ import com.shylesh.payment_service.common.identifier.IdGenerator;
 import com.shylesh.payment_service.common.outbox.OutboxEventFactory;
 import com.shylesh.payment_service.common.outbox.OutboxEventRepository;
 import com.shylesh.payment_service.exception.IdempotencyKeyReuseException;
+import com.shylesh.payment_service.exception.InvalidPaymentStateException;
 import com.shylesh.payment_service.exception.PaymentNotFoundException;
+import com.shylesh.payment_service.common.tracing.TraceContext;
+import com.shylesh.payment_service.saga.PaymentSaga;
+import com.shylesh.payment_service.saga.PaymentSagaRepository;
+import com.shylesh.payment_service.saga.PaymentSagaStepRepository;
+import com.shylesh.payment_service.saga.SagaOrchestrator;
 import com.shylesh.payment_service.event.PaymentCreatedEvent;
 import com.shylesh.payment_service.event.PaymentEventFactory;
 
@@ -21,10 +28,12 @@ import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -43,6 +52,10 @@ public class PaymentServiceImpl implements PaymentService {
     private final MeterRegistry meterRegistry;
     private final RequestFingerprint requestFingerprint;
     private final TransactionTemplate transactionTemplate;
+    private final SagaOrchestrator sagaOrchestrator;
+    private final PaymentSagaRepository sagaRepository;
+    private final PaymentSagaStepRepository sagaStepRepository;
+    private final TraceContext traceContext;
 
     /**
      * Not @Transactional on purpose: the insert runs in its own transaction (via
@@ -84,7 +97,7 @@ public class PaymentServiceImpl implements PaymentService {
                 .register(meterRegistry)
                 .record(request.getAmount().doubleValue());
 
-        recordStatusTransition(PaymentStatus.CREATED);
+        recordStatusTransition(PaymentStatus.PROCESSING);
 
         return paymentMapper.toResponse(savedPayment);
     }
@@ -120,7 +133,9 @@ public class PaymentServiceImpl implements PaymentService {
                 .merchantId(merchantId)
                 .customerId(request.getCustomerId())
                 .description(request.getDescription())
-                .status(PaymentStatus.CREATED)
+                .paymentMethod(request.getPaymentMethod())
+                .captureMethod(request.captureMethodOrDefault())
+                .status(PaymentStatus.PROCESSING)
                 .idempotencyKey(idempotencyKey)
                 .requestHash(requestHash)
                 .build();
@@ -128,7 +143,10 @@ public class PaymentServiceImpl implements PaymentService {
         Payment savedPayment = paymentRepository.saveAndFlush(payment);
 
         PaymentCreatedEvent event = paymentEventFactory.create(savedPayment);
-        outboxEventRepository.save(outboxEventFactory.createPaymentCreatedEvent(event));
+        outboxEventRepository.save(outboxEventFactory.createPaymentCreatedEvent(event, traceContext.current()));
+
+        // same transaction: a payment never exists without the saga that completes it
+        sagaOrchestrator.startPayment(savedPayment);
 
         return savedPayment;
     }
@@ -158,72 +176,52 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
-    public PaymentResponse processPayment(UUID id) {
-        Payment payment = paymentRepository.findById(id)
-                .orElseThrow(() -> new PaymentNotFoundException(id));
-
-        payment.markProcessing();
-        Payment updatedPayment = paymentRepository.save(payment);
-        recordStatusTransition(updatedPayment.getStatus());
-
-        return paymentMapper.toResponse(updatedPayment);
-    }
-
-    @Transactional
-    @Override
-    public PaymentResponse completePayment(UUID id) {
-        Payment payment = paymentRepository.findById(id)
-                .orElseThrow(() -> new PaymentNotFoundException(id));
-
-        payment.markSuccessful();
-        Payment updatedPayment = paymentRepository.save(payment);
-        recordStatusTransition(updatedPayment.getStatus());
-
-        PaymentCreatedEvent event = paymentEventFactory.create(updatedPayment);
-        outboxEventRepository.save(outboxEventFactory.createPaymentCompletedEvent(event));
-
-        return paymentMapper.toResponse(updatedPayment);
-    }
-
-    @Transactional
-    @Override
-    public PaymentResponse failPayment(UUID id) {
-        Payment payment = paymentRepository.findById(id)
-                .orElseThrow(() -> new PaymentNotFoundException(id));
-
-        payment.markFailed();
-        Payment updatedPayment = paymentRepository.save(payment);
-        recordStatusTransition(updatedPayment.getStatus());
-
-        PaymentCreatedEvent event = paymentEventFactory.create(updatedPayment);
-        outboxEventRepository.save(outboxEventFactory.createPaymentFailedEvent(event));
-
-        return paymentMapper.toResponse(updatedPayment);
+    public PaymentResponse capturePayment(UUID merchantId, UUID paymentId) {
+        sagaOrchestrator.requestCapture(merchantId, paymentId);
+        return getPayment(merchantId, paymentId);
     }
 
     @Override
-    public PaymentResponse cancelPayment(UUID merchantId, UUID id) {
-        Payment payment = findOwned(merchantId, id);
-
-        payment.markCancelled();
-        Payment updatedPayment = paymentRepository.save(payment);
-        recordStatusTransition(updatedPayment.getStatus());
-
-        return paymentMapper.toResponse(updatedPayment);
+    public PaymentResponse cancelPayment(UUID merchantId, UUID paymentId) {
+        sagaOrchestrator.requestCancel(merchantId, paymentId);
+        return getPayment(merchantId, paymentId);
     }
 
-    @Transactional
     @Override
-    public PaymentResponse refundPayment(UUID merchantId, UUID id) {
-        Payment payment = findOwned(merchantId, id);
+    public PaymentResponse refundPayment(UUID merchantId, UUID paymentId) {
+        try {
+            sagaOrchestrator.startRefund(merchantId, paymentId);
+        } catch (DataIntegrityViolationException | ObjectOptimisticLockingFailureException e) {
+            // a concurrent refund request of the same payment won (one active saga per payment)
+            throw new InvalidPaymentStateException("A refund of this payment is already in progress");
+        }
+        return getPayment(merchantId, paymentId);
+    }
 
-        payment.markRefunded();
-        Payment updatedPayment = paymentRepository.save(payment);
-        recordStatusTransition(updatedPayment.getStatus());
+    @Override
+    @Transactional(readOnly = true)
+    public List<SagaResponse> getSagas(UUID paymentId) {
+        if (!paymentRepository.existsById(paymentId)) {
+            throw new PaymentNotFoundException(paymentId);
+        }
+        return sagaRepository.findByPaymentIdOrderByCreatedAtAsc(paymentId).stream()
+                .map(this::toResponse)
+                .toList();
+    }
 
-        PaymentCreatedEvent event = paymentEventFactory.create(updatedPayment);
-        outboxEventRepository.save(outboxEventFactory.createPaymentRefundedEvent(event));
+    @Override
+    public List<SagaResponse> retrySaga(UUID paymentId) {
+        sagaOrchestrator.retry(paymentId);
+        return getSagas(paymentId);
+    }
 
-        return paymentMapper.toResponse(updatedPayment);
+    private SagaResponse toResponse(PaymentSaga saga) {
+        List<SagaResponse.Step> steps = sagaStepRepository.findBySagaIdOrderByIdAsc(saga.getId()).stream()
+                .map(step -> new SagaResponse.Step(step.getState().name(), step.getOutcome(), step.getDetail(), step.getOccurredAt()))
+                .toList();
+        return new SagaResponse(saga.getId(), saga.getType().name(), saga.getState().name(),
+                saga.getStuckState() == null ? null : saga.getStuckState().name(),
+                saga.getAttempt(), saga.getNextAttemptAt(), saga.getStepStartedAt(), saga.getFailureCode(),
+                saga.getLastError(), saga.getCreatedAt(), saga.getFinishedAt(), steps);
     }
 }

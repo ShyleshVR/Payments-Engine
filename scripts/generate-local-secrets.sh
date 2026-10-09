@@ -1,31 +1,32 @@
 #!/bin/bash
-# Creates the local overlay's secrets once (random DB passwords, admin client secret, Grafana
-# password, JWT signing key) in k8s/overlays/local/secrets/, which is git-ignored.
-# Never overwrites: Postgres creates its users from these on first start only, and tokens are
-# signed with the key, so regenerating would break an existing cluster.
+# Creates the local overlay's secrets (random DB passwords, admin client secret, Grafana password,
+# processor API key, JWT signing key) in k8s/overlays/local/secrets/, which is git-ignored.
+# Never changes an existing value: Postgres users are created with these passwords and tokens are
+# signed with the key, so regenerating would break a running cluster. Keys added in later
+# versions are appended to existing files.
 set -euo pipefail
 cd "$(dirname "$0")/../k8s/overlays/local"
 mkdir -p secrets
+touch secrets/db.env secrets/auth.env
 
 random() { openssl rand -hex 24; }
 
-if [ ! -f secrets/db.env ]; then
-  {
-    echo "postgres-password=$(random)"
-    for svc in payment ledger notification webhook merchant; do
-      echo "$svc-password=$(random)"
-    done
-  } > secrets/db.env
-  echo "created secrets/db.env"
-fi
+# ensure <file> <key>: append key=<random> unless the key is already there
+ensure() {
+  if ! grep -q "^$2=" "$1"; then
+    echo "$2=$(random)" >> "$1"
+    echo "added $2 to $1"
+  fi
+}
 
-if [ ! -f secrets/auth.env ]; then
-  {
-    echo "admin-client-secret=$(random)"
-    echo "grafana-admin-password=$(random)"
-  } > secrets/auth.env
-  echo "created secrets/auth.env"
-fi
+ensure secrets/db.env postgres-password
+for svc in payment ledger notification webhook merchant processor; do
+  ensure secrets/db.env "$svc-password"
+done
+
+ensure secrets/auth.env admin-client-secret
+ensure secrets/auth.env grafana-admin-password
+ensure secrets/auth.env processor-api-key
 
 if [ ! -f secrets/signing-key.pem ]; then
   # PKCS#8 PEM, as merchant-service's PemFileJwkSource expects.

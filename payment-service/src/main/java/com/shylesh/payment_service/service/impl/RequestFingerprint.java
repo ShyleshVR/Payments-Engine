@@ -26,6 +26,8 @@ public class RequestFingerprint {
         append(canonical, merchantId == null ? null : merchantId.toString());
         append(canonical, request.getCustomerId() == null ? null : request.getCustomerId().toString());
         append(canonical, request.getDescription());
+        append(canonical, request.getPaymentMethod());
+        append(canonical, request.captureMethodOrDefault().name());
 
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256")

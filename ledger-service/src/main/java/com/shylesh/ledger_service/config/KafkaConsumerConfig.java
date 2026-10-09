@@ -1,6 +1,6 @@
 package com.shylesh.ledger_service.config;
 
-import com.shylesh.ledger_service.event.InvalidEventException;
+import com.shylesh.ledger_service.command.InvalidCommandException;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -18,11 +18,11 @@ import org.springframework.util.backoff.ExponentialBackOff;
 
 /**
  * Three kinds of consumer failure, three behaviours:
- * - invalid message (InvalidEventException): dead-lettered immediately, retrying can't fix it;
+ * - invalid message (InvalidCommandException): dead-lettered immediately, retrying can't fix it;
  * - infrastructure down (see ConsumerFailureClassifier): retried with backoff capped at 60s,
  *   for as long as the outage lasts. The partition is held meanwhile, which is the point: no
- *   valid event is skipped (a dropped settlement would silently unbalance
- *   merchant balances), and consumer lag makes the outage visible;
+ *   valid command is skipped (a dropped settlement would leave a captured payment unbooked and
+ *   its saga waiting), and consumer lag makes the outage visible;
  * - anything else: a few quick retries, then the DLT.
  * Each backoff step (60s max) plus a DB connection timeout (30s) stays under the consumer's
  * max.poll.interval.ms (5 min), so retrying never gets the consumer kicked from the group.
@@ -62,7 +62,7 @@ public class KafkaConsumerConfig {
         errorHandler.setBackOffFunction((record, exception) ->
                 ConsumerFailureClassifier.isTransientInfrastructureFailure(exception) ? infrastructureBackOff : null);
 
-        errorHandler.addNotRetryableExceptions(InvalidEventException.class);
+        errorHandler.addNotRetryableExceptions(InvalidCommandException.class);
 
         return errorHandler;
     }

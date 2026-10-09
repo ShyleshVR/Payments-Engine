@@ -25,6 +25,7 @@ spec:
       labels:
         app: redis
     spec:
+      priorityClassName: payflow-infrastructure
       containers:
         - name: redis
           image: redis:7-alpine

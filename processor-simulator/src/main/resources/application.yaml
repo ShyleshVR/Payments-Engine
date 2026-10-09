@@ -1,0 +1,57 @@
+spring:
+  lifecycle:
+    # On SIGTERM (pod shutdown / rolling update) finish in-flight requests before exiting.
+    timeout-per-shutdown-phase: 20s
+  application:
+    name: processor-simulator
+  datasource:
+    url: jdbc:postgresql://localhost:55436/processor_db
+    username: processor_user
+    password: processor_password
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+
+# Stand-in for an external card processor (acquirer). Not a real money mover: test payment
+# methods decide the outcome (see PaymentMethodBehaviour).
+processor:
+  # Callers send it as X-Api-Key. The local default is for development only.
+  api-key: ${PROCESSOR_API_KEY:local-dev-processor-key}
+  # pm_card_timeout_once: how long the first authorization answer is delayed (longer than the
+  # caller's read timeout, so the caller sees a timeout although the authorization succeeded).
+  timeout-once-delay: 8s
+  # pm_card_flaky: how many calls per Idempotency-Key fail with 503 before one succeeds.
+  flaky-failures: 2
+  chaos:
+    # Share of requests answered 503 without being processed (0.0 - 1.0).
+    error-rate: 0.0
+    # Added to every request.
+    latency: 0ms
+
+management:
+  endpoint:
+    health:
+      # /actuator/health/liveness and /readiness for Kubernetes probes (also on outside K8s).
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://localhost:4318/v1/traces
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+server:
+  shutdown: graceful
+  port: 8086

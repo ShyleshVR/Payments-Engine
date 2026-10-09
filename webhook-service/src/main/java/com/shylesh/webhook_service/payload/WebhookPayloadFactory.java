@@ -15,7 +15,8 @@ import java.time.format.DateTimeFormatter;
 @RequiredArgsConstructor
 public class WebhookPayloadFactory {
 
-    public static final String CURRENT_PAYLOAD_VERSION = "1";
+    /** 1.1 added failureCode (additive: 1.0 consumers can ignore it). */
+    public static final String CURRENT_PAYLOAD_VERSION = "1.1";
 
     private static final String PUBLIC_PAYMENT_ID_PREFIX = "pay_";
 
@@ -36,7 +37,8 @@ public class WebhookPayloadFactory {
                 event.data().getMerchantId(),
                 event.data().getAmount(),
                 event.data().getCurrency(),
-                occurredAt
+                occurredAt,
+                event.data().getFailureCode()
         );
     }
 

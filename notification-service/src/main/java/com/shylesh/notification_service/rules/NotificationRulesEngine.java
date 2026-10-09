@@ -25,6 +25,9 @@ public class NotificationRulesEngine {
         RULES.put(PaymentEventType.PAYMENT_COMPLETED, List.of(NotificationChannelType.EMAIL));
         RULES.put(PaymentEventType.PAYMENT_FAILED, List.of(NotificationChannelType.EMAIL));
         RULES.put(PaymentEventType.PAYMENT_REFUNDED, List.of(NotificationChannelType.EMAIL));
+        // the customer's reserved funds were released
+        RULES.put(PaymentEventType.PAYMENT_CANCELLED, List.of(NotificationChannelType.EMAIL));
+        // PAYMENT_AUTHORIZED and PAYMENT_REFUND_FAILED concern the merchant (webhooks), not the customer
     }
 
     public List<NotificationChannelType> resolveChannels(String eventType) {

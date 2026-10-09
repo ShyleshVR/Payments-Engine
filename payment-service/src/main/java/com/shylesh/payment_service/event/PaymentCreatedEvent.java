@@ -26,4 +26,7 @@ public class PaymentCreatedEvent {
     private UUID customerId;
 
     private LocalDateTime createdAt;
+
+    /** PAYMENT_FAILED / PAYMENT_CANCELLED / PAYMENT_REFUND_FAILED: why (decline code etc.). */
+    private String failureCode;
 }

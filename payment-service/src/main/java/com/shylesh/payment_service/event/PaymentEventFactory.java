@@ -16,4 +16,16 @@ public class PaymentEventFactory {
                 .createdAt(payment.getCreatedAt())
                 .build();
     }
+
+    public PaymentCreatedEvent create(Payment payment, String failureCode) {
+        return PaymentCreatedEvent.builder()
+                .paymentId(payment.getId())
+                .amount(payment.getAmount())
+                .currency(payment.getCurrency())
+                .merchantId(payment.getMerchantId())
+                .customerId(payment.getCustomerId())
+                .createdAt(payment.getCreatedAt())
+                .failureCode(failureCode)
+                .build();
+    }
 }

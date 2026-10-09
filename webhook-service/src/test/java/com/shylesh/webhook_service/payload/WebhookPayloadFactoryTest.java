@@ -25,13 +25,13 @@ class WebhookPayloadFactoryTest {
                 eventId,
                 "PAYMENT_COMPLETED",
                 LocalDateTime.of(2026, 10, 5, 8, 30, 15),
-                new PaymentEventData(paymentId, new BigDecimal("200.00"), "USD", merchantId, null, null)
+                new PaymentEventData(paymentId, new BigDecimal("200.00"), "USD", merchantId, null, null, null)
         );
 
         String json = factory.render(factory.create(event));
 
         assertThat(json).isEqualTo("{"
-                + "\"payloadVersion\":\"1\","
+                + "\"payloadVersion\":\"1.1\","
                 + "\"eventId\":\"11111111-1111-1111-1111-111111111111\","
                 + "\"eventType\":\"PAYMENT_COMPLETED\","
                 + "\"paymentId\":\"pay_22222222-2222-2222-2222-222222222222\","
@@ -40,5 +40,19 @@ class WebhookPayloadFactoryTest {
                 + "\"currency\":\"USD\","
                 + "\"occurredAt\":\"2026-10-05T08:30:15Z\""
                 + "}");
+    }
+
+    @Test
+    void failureEventsCarryTheFailureCodeLast() {
+        PaymentEvent event = new PaymentEvent(
+                UUID.randomUUID(),
+                "PAYMENT_FAILED",
+                LocalDateTime.of(2026, 10, 5, 8, 30, 15),
+                new PaymentEventData(UUID.randomUUID(), new BigDecimal("10.00"), "USD", UUID.randomUUID(), null, null, "do_not_honor")
+        );
+
+        String json = factory.render(factory.create(event));
+
+        assertThat(json).endsWith("\"occurredAt\":\"2026-10-05T08:30:15Z\",\"failureCode\":\"do_not_honor\"}");
     }
 }

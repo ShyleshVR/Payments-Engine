@@ -19,6 +19,14 @@ class NotificationRulesEngineTest {
                 .containsExactly(NotificationChannelType.EMAIL);
         assertThat(rulesEngine.resolveChannels("PAYMENT_REFUNDED"))
                 .containsExactly(NotificationChannelType.EMAIL);
+        assertThat(rulesEngine.resolveChannels("PAYMENT_CANCELLED"))
+                .containsExactly(NotificationChannelType.EMAIL);
+    }
+
+    @Test
+    void merchantOnlyEventsNotifyNoCustomer() {
+        assertThat(rulesEngine.resolveChannels("PAYMENT_AUTHORIZED")).isEmpty();
+        assertThat(rulesEngine.resolveChannels("PAYMENT_REFUND_FAILED")).isEmpty();
     }
 
     @Test

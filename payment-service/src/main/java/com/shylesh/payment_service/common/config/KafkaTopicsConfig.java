@@ -36,4 +36,16 @@ public class KafkaTopicsConfig {
         return TopicBuilder.name(Topics.PAYMENT_CREATED_DLT).partitions(partitions).replicas(replicationFactor).build();
     }
 
+    /** Saga commands to the ledger, keyed by payment id (a payment's commands stay in order). */
+    @Bean
+    public NewTopic ledgerCommandsTopic() {
+        return TopicBuilder.name(Topics.LEDGER_COMMANDS).partitions(partitions).replicas(replicationFactor).build();
+    }
+
+    /** ledger-service's dead letters for commands; same partition count as the source topic. */
+    @Bean
+    public NewTopic ledgerCommandsDeadLetterTopic() {
+        return TopicBuilder.name(Topics.LEDGER_COMMANDS_DLT).partitions(partitions).replicas(replicationFactor).build();
+    }
+
 }

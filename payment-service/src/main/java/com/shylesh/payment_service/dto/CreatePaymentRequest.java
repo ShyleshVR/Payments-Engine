@@ -1,5 +1,6 @@
 package com.shylesh.payment_service.dto;
 
+import com.shylesh.payment_service.entity.CaptureMethod;
 import jakarta.validation.constraints.*;
 import lombok.*;
 
@@ -26,4 +27,17 @@ public class CreatePaymentRequest {
 
     @Size(max = 255)
     private String description;
+
+    /** Card token, e.g. pm_card_visa (see the processor's test payment methods). */
+    @NotBlank
+    @Size(max = 64)
+    @Pattern(regexp = "pm_[a-z0-9_]+", message = "must be a payment method token such as pm_card_visa")
+    private String paymentMethod;
+
+    /** AUTOMATIC (default): captured right away. MANUAL: authorized only, captured by POST .../capture. */
+    private CaptureMethod captureMethod;
+
+    public CaptureMethod captureMethodOrDefault() {
+        return captureMethod == null ? CaptureMethod.AUTOMATIC : captureMethod;
+    }
 }

@@ -81,7 +81,8 @@ PENDING ──claim──▶ (sending) ──2xx──────────�
 2. **In one transaction:**
    - already processed → skip;
    - event type not delivered as a webhook → mark processed, stop
-     (delivered types: `PAYMENT_CREATED`, `PAYMENT_COMPLETED`, `PAYMENT_FAILED`, `PAYMENT_REFUNDED`);
+     (delivered types: `PAYMENT_CREATED`, `PAYMENT_AUTHORIZED`, `PAYMENT_COMPLETED`, `PAYMENT_FAILED`,
+     `PAYMENT_CANCELLED`, `PAYMENT_REFUNDED`, `PAYMENT_REFUND_FAILED`);
    - merchant has no active subscription → mark processed, stop;
    - otherwise render the payload once, insert a `PENDING` delivery, and mark the event processed.
 
@@ -216,16 +217,17 @@ User-Agent: PayFlow-Webhooks/1.0
 X-Webhook-Timestamp: 1791190000
 X-Webhook-Signature: sha256=<hex(HMAC-SHA256(secret, "1791190000." + rawBody))>
 
-{"payloadVersion":"1","eventId":"…","eventType":"PAYMENT_COMPLETED",
+{"payloadVersion":"1.1","eventId":"…","eventType":"PAYMENT_FAILED",
  "paymentId":"pay_…","merchantId":"…","amount":200.00,"currency":"USD",
- "occurredAt":"2026-10-05T08:30:15Z"}
+ "occurredAt":"2026-10-05T08:30:15Z","failureCode":"do_not_honor"}
 ```
 
 | Field | Notes |
 |---|---|
-| `payloadVersion` | String (`"1"`), so it can move to `"1.1"` or `"2"` without implying numeric ordering. A breaking change ships as a new version merchants opt into. |
+| `payloadVersion` | String, so it can move from `"1"` to `"1.1"` or `"2"` without implying numeric ordering. `"1.1"` added `failureCode` (additive: 1.0 parsers ignore it). A breaking change ships as a new version merchants opt into. |
 | `eventId` | Unique per event; use it to deduplicate |
-| `eventType` | `PAYMENT_CREATED`, `PAYMENT_COMPLETED`, `PAYMENT_FAILED`, `PAYMENT_REFUNDED` |
+| `eventType` | `PAYMENT_CREATED`, `PAYMENT_AUTHORIZED` (MANUAL capture), `PAYMENT_COMPLETED`, `PAYMENT_FAILED`, `PAYMENT_CANCELLED`, `PAYMENT_REFUNDED`, `PAYMENT_REFUND_FAILED` (see [SAGA.md](SAGA.md)) |
+| `failureCode` | 1.1, only on `PAYMENT_FAILED`, `PAYMENT_CANCELLED`, `PAYMENT_REFUND_FAILED`: the processor's decline code (`do_not_honor`, `capture_declined`, ...) or `processor_unavailable`, `authorization_expired`, `insufficient_merchant_balance` |
 | `paymentId` | Public `pay_` form, the same identifier the payment API returns |
 | `amount` | Exact decimal with its scale preserved (`75.50`, not `75.5`) |
 | `occurredAt` | ISO-8601 UTC instant |
@@ -442,9 +444,10 @@ services, plus a test merchant endpoint that verifies signatures):
 
 Made alongside this service:
 
-- **payment-service emits `PAYMENT_FAILED`** from the `/fail` transition (via the outbox), so all
-  four planned event types exist. Ledger records it as processed without posting; notification
-  sends its email rule.
+- **payment-service emits `PAYMENT_FAILED`** (via the outbox), so all four planned event types
+  exist. (Since the saga, the payment saga emits it when authorization or capture fails, and
+  three more types were added; see [SAGA.md](SAGA.md).) Notification sends its email rule; the
+  ledger now posts from saga commands, not from events.
 - **payment-service amount precision fix.** The Kafka publisher re-parsed the outbox payload with
   `readTree`, which turned decimals into doubles and stripped trailing zeros. Every consumer
   received `75.5` for `75.50`, and large amounts could lose cents. It now keeps amounts exact.

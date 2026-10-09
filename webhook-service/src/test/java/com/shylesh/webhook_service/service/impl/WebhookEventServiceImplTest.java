@@ -55,7 +55,7 @@ class WebhookEventServiceImplTest {
 
     private PaymentEvent event(String type) {
         return new PaymentEvent(UUID.randomUUID(), type, LocalDateTime.now(),
-                new PaymentEventData(UUID.randomUUID(), new BigDecimal("200.00"), "USD", merchantId, null, null));
+                new PaymentEventData(UUID.randomUUID(), new BigDecimal("200.00"), "USD", merchantId, null, null, null));
     }
 
     @Test
@@ -74,7 +74,7 @@ class WebhookEventServiceImplTest {
         assertThat(delivery.getUrl()).isEqualTo(subscription.getUrl());
         assertThat(delivery.getNextAttemptAt()).isNotNull();
         assertThat(delivery.getPayload())
-                .contains("\"payloadVersion\":\"1\"")
+                .contains("\"payloadVersion\":\"1.1\"")
                 .contains("\"paymentId\":\"pay_" + event.data().getPaymentId() + "\"");
         verify(processedEventRepository).save(any());
     }

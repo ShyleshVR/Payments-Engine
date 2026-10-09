@@ -3,6 +3,7 @@ package com.shylesh.payment_service.controller;
 import com.shylesh.payment_service.common.identifier.IdentifierService;
 import com.shylesh.payment_service.dto.CreatePaymentRequest;
 import com.shylesh.payment_service.dto.PaymentResponse;
+import com.shylesh.payment_service.dto.SagaResponse;
 import com.shylesh.payment_service.exception.InvalidIdempotencyKeyException;
 import com.shylesh.payment_service.security.CurrentMerchant;
 import com.shylesh.payment_service.service.PaymentService;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.*;
 
 import jakarta.validation.Valid;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -58,48 +60,53 @@ public class PaymentController {
         return ResponseEntity.ok(paymentService.getPayment(merchantId, id));
     }
 
-    @PostMapping("/{paymentId}/process")
-    @PreAuthorize("hasAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_OPERATE)")
-    public ResponseEntity<PaymentResponse> processPayment(@PathVariable String paymentId) {
+    /** MANUAL capture: charge an authorized payment. The saga completes it asynchronously. */
+    @PostMapping("/{paymentId}/capture")
+    @PreAuthorize("hasAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_WRITE)")
+    public ResponseEntity<PaymentResponse> capturePayment(@CurrentMerchant UUID merchantId, @PathVariable String paymentId) {
 
         UUID id = identifierService.parsePaymentId(paymentId);
 
-        return ResponseEntity.ok(paymentService.processPayment(id));
+        return ResponseEntity.accepted().body(paymentService.capturePayment(merchantId, id));
     }
 
-    @PostMapping("/{paymentId}/complete")
-    @PreAuthorize("hasAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_OPERATE)")
-    public ResponseEntity<PaymentResponse> completePayment(@PathVariable String paymentId) {
-
-        UUID id = identifierService.parsePaymentId(paymentId);
-
-        return ResponseEntity.ok(paymentService.completePayment(id));
-    }
-
-    @PostMapping("/{paymentId}/fail")
-    @PreAuthorize("hasAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_OPERATE)")
-    public ResponseEntity<PaymentResponse> failPayment(@PathVariable String paymentId) {
-
-        UUID id = identifierService.parsePaymentId(paymentId);
-
-        return ResponseEntity.ok(paymentService.failPayment(id));
-    }
-
+    /** Releases an authorized, uncaptured payment; it becomes CANCELLED once the processor confirms. */
     @PostMapping("/{paymentId}/cancel")
     @PreAuthorize("hasAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_WRITE)")
     public ResponseEntity<PaymentResponse> cancelPayment(@CurrentMerchant UUID merchantId, @PathVariable String paymentId) {
 
         UUID id = identifierService.parsePaymentId(paymentId);
 
-        return ResponseEntity.ok(paymentService.cancelPayment(merchantId, id));
+        return ResponseEntity.accepted().body(paymentService.cancelPayment(merchantId, id));
     }
 
+    /** Starts a refund (REFUND_PENDING); the outcome arrives as PAYMENT_REFUNDED or PAYMENT_REFUND_FAILED. */
     @PostMapping("/{paymentId}/refund")
     @PreAuthorize("hasAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_WRITE)")
     public ResponseEntity<PaymentResponse> refundPayment(@CurrentMerchant UUID merchantId, @PathVariable String paymentId) {
 
         UUID id = identifierService.parsePaymentId(paymentId);
 
-        return ResponseEntity.ok(paymentService.refundPayment(merchantId, id));
+        return ResponseEntity.accepted().body(paymentService.refundPayment(merchantId, id));
+    }
+
+    /** Operator: the payment's sagas with their step history. */
+    @GetMapping("/{paymentId}/saga")
+    @PreAuthorize("hasAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_OPERATE)")
+    public ResponseEntity<List<SagaResponse>> getSagas(@PathVariable String paymentId) {
+
+        UUID id = identifierService.parsePaymentId(paymentId);
+
+        return ResponseEntity.ok(paymentService.getSagas(id));
+    }
+
+    /** Operator: resume a saga parked in REQUIRES_ATTENTION (after fixing what stopped it). */
+    @PostMapping("/{paymentId}/saga/retry")
+    @PreAuthorize("hasAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_OPERATE)")
+    public ResponseEntity<List<SagaResponse>> retrySaga(@PathVariable String paymentId) {
+
+        UUID id = identifierService.parsePaymentId(paymentId);
+
+        return ResponseEntity.ok(paymentService.retrySaga(id));
     }
 }

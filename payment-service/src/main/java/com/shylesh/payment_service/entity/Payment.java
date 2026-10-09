@@ -51,6 +51,27 @@ public class Payment {
     @Column(name = "request_hash", length = 64, updatable = false)
     private String requestHash;
 
+    /** Test payment method token (e.g. pm_card_visa); null for payments made before sagas. */
+    @Column(name = "payment_method", length = 64, updatable = false)
+    private String paymentMethod;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "capture_method", nullable = false, length = 20, updatable = false)
+    @Builder.Default
+    private CaptureMethod captureMethod = CaptureMethod.AUTOMATIC;
+
+    @Column(name = "failure_code", length = 64)
+    private String failureCode;
+
+    @Column(name = "refund_failure_code", length = 64)
+    private String refundFailureCode;
+
+    @Column(name = "processor_authorization_id", length = 40)
+    private String processorAuthorizationId;
+
+    @Column(name = "authorization_expires_at")
+    private LocalDateTime authorizationExpiresAt;
+
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
@@ -63,31 +84,62 @@ public class Payment {
     @Column(nullable = false)
     private Long version;
 
-    public void markProcessing() {
-        transitionTo(PaymentStatus.CREATED, PaymentStatus.PROCESSING);
+    // Transitions, driven by the payment and refund sagas.
+
+    /** Authorized at the processor. AUTOMATIC capture continues at once; MANUAL waits for the merchant. */
+    public void recordAuthorization(String authorizationId, LocalDateTime expiresAt) {
+        requireStatus(PaymentStatus.PROCESSING, PaymentStatus.AUTHORIZED);
+        this.processorAuthorizationId = authorizationId;
+        if (captureMethod == CaptureMethod.MANUAL) {
+            this.status = PaymentStatus.AUTHORIZED;
+            this.authorizationExpiresAt = expiresAt;
+        }
     }
 
-    public void markSuccessful() {
+    /** MANUAL capture requested by the merchant. */
+    public void markCaptureRequested() {
+        transitionTo(PaymentStatus.AUTHORIZED, PaymentStatus.PROCESSING);
+    }
+
+    public void markSucceeded() {
         transitionTo(PaymentStatus.PROCESSING, PaymentStatus.SUCCESS);
     }
 
-    public void markFailed() {
-        transitionTo(PaymentStatus.PROCESSING, PaymentStatus.FAILED);
+    public void markFailed(String code) {
+        requireStatus(PaymentStatus.PROCESSING, PaymentStatus.FAILED);
+        this.status = PaymentStatus.FAILED;
+        this.failureCode = code;
     }
 
-    public void markCancelled() {
-        transitionTo(PaymentStatus.CREATED, PaymentStatus.CANCELLED);
+    public void markCancelled(String code) {
+        requireStatus(PaymentStatus.AUTHORIZED, PaymentStatus.CANCELLED);
+        this.status = PaymentStatus.CANCELLED;
+        this.failureCode = code;
+    }
+
+    public void markRefundPending() {
+        transitionTo(PaymentStatus.SUCCESS, PaymentStatus.REFUND_PENDING);
+        this.refundFailureCode = null;
     }
 
     public void markRefunded() {
-        transitionTo(PaymentStatus.SUCCESS, PaymentStatus.REFUNDED);
+        transitionTo(PaymentStatus.REFUND_PENDING, PaymentStatus.REFUNDED);
     }
 
-    private void transitionTo(PaymentStatus expectedCurrent,PaymentStatus newStatus){
+    /** The refund didn't happen: the payment is SUCCESS again, and can be refunded again later. */
+    public void markRefundFailed(String code) {
+        transitionTo(PaymentStatus.REFUND_PENDING, PaymentStatus.SUCCESS);
+        this.refundFailureCode = code;
+    }
+
+    private void transitionTo(PaymentStatus expectedCurrent, PaymentStatus newStatus) {
+        requireStatus(expectedCurrent, newStatus);
+        this.status = newStatus;
+    }
+
+    private void requireStatus(PaymentStatus expectedCurrent, PaymentStatus newStatus) {
         if (this.status != expectedCurrent) {
             throw new InvalidPaymentStateException(status, newStatus);
         }
-
-        this.status = newStatus;
     }
 }
