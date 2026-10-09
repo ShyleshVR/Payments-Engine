@@ -24,6 +24,10 @@ public class LedgerTransaction {
     @Column(name = "payment_id", nullable = false, updatable = false)
     private UUID paymentId;
 
+    /** The saga this posting belongs to (null for postings made before sagas). */
+    @Column(name = "saga_id", updatable = false)
+    private UUID sagaId;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, updatable = false)
     private LedgerTransactionType type;

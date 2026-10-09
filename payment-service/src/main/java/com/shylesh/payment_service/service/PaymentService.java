@@ -2,27 +2,29 @@ package com.shylesh.payment_service.service;
 
 import com.shylesh.payment_service.dto.CreatePaymentRequest;
 import com.shylesh.payment_service.dto.PaymentResponse;
+import com.shylesh.payment_service.dto.SagaResponse;
 
+import java.util.List;
 import java.util.UUID;
 
-/**
- * Merchant operations (create, get, cancel, refund) take the caller's merchant id and only ever
- * see that merchant's payments. process/complete/fail are internal operations on any payment.
- */
 public interface PaymentService {
 
+    /** Accepts the payment and starts its saga; the outcome follows asynchronously (webhook or GET). */
     PaymentResponse createPayment(UUID merchantId, String idempotencyKey, CreatePaymentRequest request);
 
     PaymentResponse getPayment(UUID merchantId, UUID paymentId);
 
-    PaymentResponse processPayment(UUID id);
+    /** MANUAL capture of an authorized payment. */
+    PaymentResponse capturePayment(UUID merchantId, UUID paymentId);
 
-    PaymentResponse completePayment(UUID id);
+    /** Releases an authorized, uncaptured payment. */
+    PaymentResponse cancelPayment(UUID merchantId, UUID paymentId);
 
-    PaymentResponse failPayment(UUID id);
+    PaymentResponse refundPayment(UUID merchantId, UUID paymentId);
 
-    PaymentResponse cancelPayment(UUID merchantId, UUID id);
+    /** Operator: every saga of the payment, oldest first. */
+    List<SagaResponse> getSagas(UUID paymentId);
 
-    PaymentResponse refundPayment(UUID merchantId, UUID id);
-
+    /** Operator: resume a saga parked in REQUIRES_ATTENTION. */
+    List<SagaResponse> retrySaga(UUID paymentId);
 }

@@ -5,7 +5,11 @@ import com.shylesh.payment_service.event.PaymentEventPublisher;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
+import com.shylesh.payment_service.common.tracing.TraceContext;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import org.junit.jupiter.api.BeforeEach;
+import org.springframework.beans.factory.support.StaticListableBeanFactory;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -41,7 +45,9 @@ class OutboxPublisherTest {
                 eventPublisher,
                 new TransactionTemplate(mock(PlatformTransactionManager.class)),
                 properties,
-                new SimpleMeterRegistry()
+                new SimpleMeterRegistry(),
+                new TraceContext(new StaticListableBeanFactory().getBeanProvider(Tracer.class),
+                        new StaticListableBeanFactory().getBeanProvider(Propagator.class))
         );
     }
 

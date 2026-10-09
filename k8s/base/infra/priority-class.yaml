@@ -1,0 +1,10 @@
+# Postgres, Kafka and Redis: every application waits for them (init containers), so when the node
+# is full they may preempt application pods instead of waiting behind pods that wait for them.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: payflow-infrastructure
+value: 100000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: PayFlow stateful infrastructure (Postgres, Kafka, Redis)

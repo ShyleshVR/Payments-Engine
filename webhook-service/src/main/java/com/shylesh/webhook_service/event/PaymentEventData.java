@@ -24,4 +24,7 @@ public class PaymentEventData {
     private UUID customerId;
 
     private LocalDateTime createdAt;
+
+    /** FAILED / CANCELLED / REFUND_FAILED events: why. */
+    private String failureCode;
 }

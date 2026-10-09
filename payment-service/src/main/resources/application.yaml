@@ -16,6 +16,14 @@ spring:
         delivery.timeout.ms: 10000
     template:
       observation-enabled: true
+    # Ledger replies to saga commands.
+    consumer:
+      group-id: payment-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      observation-enabled: true
   datasource:
     url: jdbc:postgresql://localhost:55432/payflow
     username: payflow
@@ -52,7 +60,8 @@ spring:
 
 outbox:
   publisher:
-    poll-interval: PT5S
+    # Saga commands travel through the outbox too, so it is polled often.
+    poll-interval: PT0.5S
     batch-size: 100
     send-timeout: 15s
     initial-backoff: 1s
@@ -66,6 +75,46 @@ payflow:
     # Topics this service owns are created with these settings (see KafkaTopicsConfig).
     partitions: 3
     replication-factor: 1
+  # The card processor (processor-simulator locally).
+  processor:
+    base-url: http://localhost:8086
+    api-key: ${PAYFLOW_PROCESSOR_API_KEY:local-dev-processor-key}
+    connect-timeout: 1s
+    read-timeout: 5s
+  # Payment and refund sagas (see SagaProperties for what each setting means).
+  saga:
+    poll-interval: 500ms
+    workers: 8
+    max-in-flight: 100
+    lease: 30s
+    authorization-ttl: 7d
+    step-timeouts:
+      authorize: 2m
+      capture: 10m
+      voiding: 24h
+      refund: 10m
+    retry:
+      initial-backoff: 1s
+      max-backoff: 30s
+    replies:
+      timeout: 15s
+      max-timeout: 5m
+
+# Processor calls fail fast while the processor keeps failing (UNKNOWN outcomes only: declines
+# are answers, not failures), then a few trial calls decide whether it is back.
+resilience4j:
+  circuitbreaker:
+    instances:
+      processor:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        minimum-number-of-calls: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        record-exceptions:
+          - com.shylesh.payment_service.processor.ProcessorUnavailableException
 
 management:
   endpoint:
@@ -86,6 +135,11 @@ management:
   metrics:
     tags:
       application: ${spring.application.name}
+    distribution:
+      # Buckets for the Grafana percentile panels.
+      percentiles-histogram:
+        saga.duration: true
+        processor.calls: true
 
 logging:
   level:

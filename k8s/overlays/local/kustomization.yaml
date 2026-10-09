@@ -14,6 +14,7 @@ images:
   - { name: payflow/api-gateway, newTag: local }
   - { name: payflow/merchant-service, newTag: local }
   - { name: payflow/payment-service, newTag: local }
+  - { name: payflow/processor-simulator, newTag: local }
   - { name: payflow/ledger-service, newTag: local }
   - { name: payflow/notification-service, newTag: local }
   - { name: payflow/webhook-service, newTag: local }
@@ -38,6 +39,13 @@ patches:
       - op: add
         path: /spec/type
         value: LoadBalancer
+  # Smaller memory requests than the base (512Mi): these JVMs use ~300-400Mi, and a single
+  # Docker Desktop node must fit 16 application pods plus a rollout's surge pods.
+  - target: { kind: Deployment, name: "api-gateway|merchant-service|payment-service|processor-simulator|ledger-service|notification-service|webhook-service" }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 384Mi
   # Webhook endpoints may be plain-http in-cluster addresses here (a test receiver). Never in
   # production: that is what the SSRF guard exists to prevent.
   - target: { kind: Deployment, name: webhook-service }

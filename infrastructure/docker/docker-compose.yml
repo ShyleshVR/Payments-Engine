@@ -88,6 +88,24 @@ services:
     volumes:
       - postgres_merchant_data:/var/lib/postgresql/data
 
+  postgres-processor:
+    image: postgres:17
+    container_name: processor-postgres
+
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: processor_db
+      POSTGRES_USER: processor_user
+      POSTGRES_PASSWORD: processor_password
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "55436:5432"
+
+    volumes:
+      - postgres_processor_data:/var/lib/postgresql/data
+
   redis:
     image: redis:7-alpine
     container_name: payflow-redis
@@ -166,4 +184,5 @@ volumes:
   postgres_ledger_data:
   postgres_webhook_data:
   postgres_merchant_data:
+  postgres_processor_data:
   grafana_data:

@@ -22,6 +22,7 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 import static org.hamcrest.Matchers.startsWith;
@@ -64,7 +65,7 @@ class PaymentControllerSecurityTest {
                 .status("CREATED").createdAt(LocalDateTime.now()).build();
     }
 
-    private static final String BODY = "{\"amount\":10.00,\"currency\":\"USD\"}";
+    private static final String BODY = "{\"amount\":10.00,\"currency\":\"USD\",\"paymentMethod\":\"pm_card_visa\"}";
 
     @Test
     void noTokenIs401WithBearerChallengeAndJsonBody() throws Exception {
@@ -93,7 +94,7 @@ class PaymentControllerSecurityTest {
         mockMvc.perform(post("/api/v1/payments").with(merchant("payments:write"))
                         .header("Idempotency-Key", "k1")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"amount\":10.00,\"currency\":\"USD\",\"merchantId\":\"" + UUID.randomUUID() + "\"}"))
+                        .content("{\"amount\":10.00,\"currency\":\"USD\",\"paymentMethod\":\"pm_card_visa\",\"merchantId\":\"" + UUID.randomUUID() + "\"}"))
                 .andExpect(status().isCreated());
 
         verify(paymentService).createPayment(eq(merchantId), eq("k1"), any(CreatePaymentRequest.class));
@@ -109,21 +110,41 @@ class PaymentControllerSecurityTest {
     }
 
     @Test
-    void merchantCannotDriveProcessingOutcomes() throws Exception {
-        for (String action : new String[]{"process", "complete", "fail"}) {
-            mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/" + action)
-                            .with(merchant("payments:write", "payments:read")))
-                    .andExpect(status().isForbidden());
-        }
+    void createWithoutAPaymentMethodIs400() throws Exception {
+        mockMvc.perform(post("/api/v1/payments").with(merchant("payments:write"))
+                        .header("Idempotency-Key", "k1").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":10.00,\"currency\":\"USD\"}"))
+                .andExpect(status().isBadRequest());
         verifyNoInteractions(paymentService);
     }
 
     @Test
-    void operatorCanDriveProcessingOutcomes() throws Exception {
-        when(paymentService.completePayment(paymentId)).thenReturn(response());
+    void merchantCannotInspectOrRetrySagas() throws Exception {
+        mockMvc.perform(get("/api/v1/payments/pay_" + paymentId + "/saga").with(merchant("payments:write", "payments:read")))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/saga/retry").with(merchant("payments:write", "payments:read")))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(paymentService);
+    }
 
-        mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/complete").with(operator()))
+    @Test
+    void operatorCanInspectAndRetrySagas() throws Exception {
+        when(paymentService.getSagas(paymentId)).thenReturn(List.of());
+        when(paymentService.retrySaga(paymentId)).thenReturn(List.of());
+
+        mockMvc.perform(get("/api/v1/payments/pay_" + paymentId + "/saga").with(operator()))
                 .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/saga/retry").with(operator()))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void operatorCannotCaptureOrRefundForAMerchant() throws Exception {
+        for (String action : new String[]{"capture", "cancel", "refund"}) {
+            mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/" + action).with(operator()))
+                    .andExpect(status().isForbidden());
+        }
+        verifyNoInteractions(paymentService);
     }
 
     @Test
@@ -144,11 +165,17 @@ class PaymentControllerSecurityTest {
     }
 
     @Test
-    void refundIsScopedToTheTokensMerchant() throws Exception {
+    void refundCaptureAndCancelAreAcceptedForTheTokensMerchant() throws Exception {
         when(paymentService.refundPayment(merchantId, paymentId)).thenReturn(response());
+        when(paymentService.capturePayment(merchantId, paymentId)).thenReturn(response());
+        when(paymentService.cancelPayment(merchantId, paymentId)).thenReturn(response());
 
-        mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/refund").with(merchant("payments:write")))
-                .andExpect(status().isOk());
+        for (String action : new String[]{"refund", "capture", "cancel"}) {
+            mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/" + action).with(merchant("payments:write")))
+                    .andExpect(status().isAccepted());
+        }
         verify(paymentService).refundPayment(merchantId, paymentId);
+        verify(paymentService).capturePayment(merchantId, paymentId);
+        verify(paymentService).cancelPayment(merchantId, paymentId);
     }
 }

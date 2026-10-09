@@ -20,6 +20,9 @@ public class PaymentMapperImpl implements PaymentMapper {
                 .currency(payment.getCurrency())
                 .status(payment.getStatus().name())
                 .createdAt(payment.getCreatedAt())
+                .captureMethod(payment.getCaptureMethod() == null ? null : payment.getCaptureMethod().name())
+                .failureCode(payment.getFailureCode())
+                .refundFailureCode(payment.getRefundFailureCode())
                 .build();
     }
 }

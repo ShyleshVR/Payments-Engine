@@ -49,13 +49,17 @@ kubectl kustomize --load-restrictor LoadRestrictionsNone k8s/overlays/local | ku
 if [ "$already_deployed" -gt 0 ] && [ "${SKIP_BUILD:-0}" != "1" ]; then
   echo "==> rolling restart to pick up the rebuilt images"
   kubectl -n "$NAMESPACE" rollout restart deployment \
-    api-gateway merchant-service payment-service ledger-service notification-service webhook-service
+    api-gateway merchant-service payment-service ledger-service notification-service webhook-service processor-simulator
 fi
 
 echo "==> waiting for rollouts"
 kubectl -n "$NAMESPACE" rollout status statefulset/postgres --timeout=300s
+# The image runs init scripts only on an empty volume; re-run the (idempotent) script so
+# databases added since the volume was created exist too.
+# (MSYS_NO_PATHCONV: stops Git Bash on Windows from rewriting the container path; no-op elsewhere)
+MSYS_NO_PATHCONV=1 kubectl -n "$NAMESPACE" exec postgres-0 -- bash /docker-entrypoint-initdb.d/postgres-init.sh
 kubectl -n "$NAMESPACE" rollout status statefulset/kafka --timeout=300s
-for d in redis jaeger prometheus grafana merchant-service payment-service ledger-service notification-service webhook-service api-gateway; do
+for d in redis jaeger prometheus grafana merchant-service processor-simulator payment-service ledger-service notification-service webhook-service api-gateway; do
   kubectl -n "$NAMESPACE" rollout status "deployment/$d" --timeout=600s
 done
 

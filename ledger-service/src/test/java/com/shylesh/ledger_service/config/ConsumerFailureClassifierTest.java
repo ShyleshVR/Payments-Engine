@@ -1,6 +1,6 @@
 package com.shylesh.ledger_service.config;
 
-import com.shylesh.ledger_service.event.InvalidEventException;
+import com.shylesh.ledger_service.command.InvalidCommandException;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -31,7 +31,7 @@ class ConsumerFailureClassifierTest {
 
     @Test
     void messageProblemsAreNotTransient() {
-        assertThat(ConsumerFailureClassifier.isTransientInfrastructureFailure(new InvalidEventException("bad"))).isFalse();
+        assertThat(ConsumerFailureClassifier.isTransientInfrastructureFailure(new InvalidCommandException("bad"))).isFalse();
         assertThat(ConsumerFailureClassifier.isTransientInfrastructureFailure(new DataIntegrityViolationException("constraint"))).isFalse();
         assertThat(ConsumerFailureClassifier.isTransientInfrastructureFailure(new IllegalStateException("bug"))).isFalse();
     }

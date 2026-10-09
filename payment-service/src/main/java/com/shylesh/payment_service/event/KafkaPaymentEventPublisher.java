@@ -43,7 +43,7 @@ public class KafkaPaymentEventPublisher implements PaymentEventPublisher {
                     );
 
             return kafkaTemplate.send(
-                    Topics.PAYMENT_CREATED,
+                    outboxEvent.getTopic(),
                     outboxEvent.getAggregateId().toString(),
                     envelope
             );

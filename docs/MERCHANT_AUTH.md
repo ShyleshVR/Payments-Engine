@@ -63,17 +63,18 @@ scope it doesn't have is rejected with `invalid_scope`.
 
 | Scope | Granted to | Allows |
 |---|---|---|
-| `payments:write` | merchant | create, cancel, refund **own** payments |
+| `payments:write` | merchant | create, capture, cancel, refund **own** payments |
 | `payments:read` | merchant | read **own** payments |
 | `ledger:read` | merchant | **own** balance; own payments' ledger transactions |
 | `webhooks:manage` | merchant | **own** webhook subscription and delivery audit |
-| `payments:operate` | operator | `process` / `complete` / `fail` **any** payment |
+| `payments:operate` | operator | inspect and retry **any** payment's saga (`/saga`, `/saga/retry`) |
 | `ledger:admin` | operator | platform-clearing balance; any merchant's balance and transactions |
 | `merchants:admin` | operator | merchant and credential admin API |
 
-`process`, `complete` and `fail` are processing outcomes, not merchant actions. A merchant can't
-mark its own payment as paid; until a payment-processor integration drives these transitions,
-they require the operator scope.
+Processing outcomes are not anyone's to set: the payment saga drives authorization, capture and
+settlement against the card processor and the ledger (see [SAGA.md](SAGA.md)). The operator
+scope is for inspecting sagas and resuming one that stopped for attention. (Before the saga,
+`process` / `complete` / `fail` were operator endpoints; they have been removed.)
 
 ## Onboarding and credential lifecycle
 

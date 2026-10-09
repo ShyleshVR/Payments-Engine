@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @Service
 @RequiredArgsConstructor
@@ -30,17 +31,25 @@ public class LedgerQueryServiceImpl implements LedgerQueryService {
     @Override
     public AccountBalanceResponse getBalance(LedgerAccountType ownerType, UUID ownerId, String currency) {
 
-        BigDecimal balance = accountRepository
-                .findByOwnerTypeAndOwnerIdAndCurrency(ownerType, ownerId, currency)
-                .map(account -> entryRepository.sumBalanceByAccountId(account.getId()))
-                .orElse(BigDecimal.ZERO);
+        BigDecimal balance = balanceOf(ownerType, ownerId, currency);
+        BigDecimal reserved = ownerType == LedgerAccountType.MERCHANT
+                ? balanceOf(LedgerAccountType.MERCHANT_REFUND_RESERVE, ownerId, currency)
+                : null;
 
         return AccountBalanceResponse.builder()
                 .ownerType(ownerType)
                 .ownerId(ownerId)
                 .currency(currency)
                 .balance(balance)
+                .reserved(reserved)
                 .build();
+    }
+
+    private BigDecimal balanceOf(LedgerAccountType ownerType, UUID ownerId, String currency) {
+        return accountRepository
+                .findByOwnerTypeAndOwnerIdAndCurrency(ownerType, ownerId, currency)
+                .map(account -> entryRepository.sumBalanceByAccountId(account.getId()))
+                .orElse(BigDecimal.ZERO);
     }
 
     @Override
@@ -63,8 +72,9 @@ public class LedgerQueryServiceImpl implements LedgerQueryService {
 
     @Override
     public List<LedgerTransactionResponse> getTransactionsForPayment(UUID paymentId, UUID merchantId) {
-        Set<UUID> merchantAccountIds = accountRepository.findByOwnerTypeAndOwnerId(LedgerAccountType.MERCHANT, merchantId)
-                .stream()
+        // the merchant's balance and refund reserve: a finalized refund only touches the reserve
+        Set<UUID> merchantAccountIds = Stream.of(LedgerAccountType.MERCHANT, LedgerAccountType.MERCHANT_REFUND_RESERVE)
+                .flatMap(type -> accountRepository.findByOwnerTypeAndOwnerId(type, merchantId).stream())
                 .map(LedgerAccount::getId)
                 .collect(Collectors.toSet());
 

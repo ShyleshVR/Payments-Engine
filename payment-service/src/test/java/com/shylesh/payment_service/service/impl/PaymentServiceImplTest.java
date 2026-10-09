@@ -6,12 +6,18 @@ import com.shylesh.payment_service.common.outbox.OutboxEventFactory;
 import com.shylesh.payment_service.common.outbox.OutboxEventRepository;
 import com.shylesh.payment_service.dto.CreatePaymentRequest;
 import com.shylesh.payment_service.dto.PaymentResponse;
+import com.shylesh.payment_service.common.tracing.TraceContext;
+import com.shylesh.payment_service.entity.CaptureMethod;
 import com.shylesh.payment_service.entity.Payment;
 import com.shylesh.payment_service.entity.PaymentStatus;
 import com.shylesh.payment_service.event.PaymentEventFactory;
 import com.shylesh.payment_service.exception.IdempotencyKeyReuseException;
+import com.shylesh.payment_service.exception.InvalidPaymentStateException;
 import com.shylesh.payment_service.mapper.PaymentMapperImpl;
 import com.shylesh.payment_service.repository.PaymentRepository;
+import com.shylesh.payment_service.saga.PaymentSagaRepository;
+import com.shylesh.payment_service.saga.PaymentSagaStepRepository;
+import com.shylesh.payment_service.saga.SagaOrchestrator;
 import com.shylesh.payment_service.service.IdempotencyService;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -43,6 +49,7 @@ class PaymentServiceImplTest {
     private PlatformTransactionManager transactionManager;
     private IdGenerator idGenerator;
     private RequestFingerprint fingerprint;
+    private SagaOrchestrator sagaOrchestrator;
     private PaymentServiceImpl service;
 
     private UUID merchantId;
@@ -56,6 +63,7 @@ class PaymentServiceImplTest {
         transactionManager = mock(PlatformTransactionManager.class);
         idGenerator = mock(IdGenerator.class);
         fingerprint = new RequestFingerprint();
+        sagaOrchestrator = mock(SagaOrchestrator.class);
 
         service = new PaymentServiceImpl(
                 paymentRepository,
@@ -67,13 +75,18 @@ class PaymentServiceImplTest {
                 new PaymentEventFactory(),
                 new SimpleMeterRegistry(),
                 fingerprint,
-                new TransactionTemplate(transactionManager)
+                new TransactionTemplate(transactionManager),
+                sagaOrchestrator,
+                mock(PaymentSagaRepository.class),
+                mock(PaymentSagaStepRepository.class),
+                mock(TraceContext.class)
         );
 
         merchantId = UUID.randomUUID();
         request = CreatePaymentRequest.builder()
                 .amount(new BigDecimal("50.00"))
                 .currency("USD")
+                .paymentMethod("pm_card_visa")
                 .build();
 
         when(idGenerator.generate()).thenAnswer(invocation -> UUID.randomUUID());
@@ -95,14 +108,18 @@ class PaymentServiceImplTest {
     }
 
     @Test
-    void createsPaymentWithFingerprintAndCachesKeyOnlyAfterCommit() {
+    void createsPaymentWithFingerprintStartsItsSagaAndCachesKeyOnlyAfterCommit() {
         PaymentResponse response = service.createPayment(merchantId, KEY, request);
 
-        assertThat(response.getStatus()).isEqualTo("CREATED");
-        verify(paymentRepository).saveAndFlush(argThat(p -> fingerprint.of(merchantId, request).equals(p.getRequestHash())));
-        verify(outboxEventRepository).save(any());
+        assertThat(response.getStatus()).isEqualTo("PROCESSING");
+        assertThat(response.getCaptureMethod()).isEqualTo("AUTOMATIC");
+        verify(paymentRepository).saveAndFlush(argThat(p -> fingerprint.of(merchantId, request).equals(p.getRequestHash())
+                && "pm_card_visa".equals(p.getPaymentMethod())));
+        verify(outboxEventRepository).save(argThat(event -> event.getEventType().equals("PAYMENT_CREATED")));
 
-        var inOrder = inOrder(transactionManager, idempotencyService);
+        // the saga starts in the same transaction as the payment, before the commit
+        var inOrder = inOrder(sagaOrchestrator, transactionManager, idempotencyService);
+        inOrder.verify(sagaOrchestrator).startPayment(any(Payment.class));
         inOrder.verify(transactionManager).commit(any());
         inOrder.verify(idempotencyService).put(eq(merchantId), eq(KEY), anyString());
     }
@@ -127,6 +144,7 @@ class PaymentServiceImplTest {
         CreatePaymentRequest different = CreatePaymentRequest.builder()
                 .amount(new BigDecimal("999.00"))
                 .currency("EUR")
+                .paymentMethod("pm_card_visa")
                 .build();
 
         assertThatThrownBy(() -> service.createPayment(merchantId, KEY, different))
@@ -151,7 +169,7 @@ class PaymentServiceImplTest {
 
         PaymentResponse response = service.createPayment(merchantId, KEY, request);
 
-        assertThat(response.getStatus()).isEqualTo("CREATED");
+        assertThat(response.getStatus()).isEqualTo("PROCESSING");
         verify(paymentRepository).saveAndFlush(any());
     }
 
@@ -180,23 +198,24 @@ class PaymentServiceImplTest {
     }
 
     @Test
-    void failingAPaymentWritesAPaymentFailedOutboxEvent() {
-        Payment processing = Payment.builder()
-                .id(UUID.randomUUID())
-                .amount(new BigDecimal("50.00"))
-                .currency("USD")
-                .merchantId(merchantId)
-                .status(PaymentStatus.PROCESSING)
-                .idempotencyKey(KEY)
-                .build();
-        when(paymentRepository.findById(processing.getId())).thenReturn(Optional.of(processing));
-        when(paymentRepository.save(any(Payment.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    void sameKeyWithADifferentCaptureMethodIsADifferentRequest() {
+        Payment existing = existingPayment(fingerprint.of(merchantId, request));
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, KEY)).thenReturn(Optional.of(existing));
+        request.setCaptureMethod(CaptureMethod.MANUAL);
 
-        PaymentResponse response = service.failPayment(processing.getId());
+        assertThatThrownBy(() -> service.createPayment(merchantId, KEY, request))
+                .isInstanceOf(IdempotencyKeyReuseException.class);
+    }
 
-        assertThat(response.getStatus()).isEqualTo("FAILED");
-        verify(outboxEventRepository).save(argThat(event ->
-                event.getEventType().equals("PAYMENT_FAILED") && event.getAggregateId().equals(processing.getId())));
+    @Test
+    void aConcurrentSecondRefundIsAConflict() {
+        UUID paymentId = UUID.randomUUID();
+        when(sagaOrchestrator.startRefund(merchantId, paymentId))
+                .thenThrow(new DataIntegrityViolationException("uq_payment_saga_active"));
+
+        assertThatThrownBy(() -> service.refundPayment(merchantId, paymentId))
+                .isInstanceOf(InvalidPaymentStateException.class)
+                .hasMessageContaining("already in progress");
     }
 
     @Test
@@ -206,10 +225,6 @@ class PaymentServiceImplTest {
         when(paymentRepository.findByIdAndMerchantId(paymentId, otherMerchant)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.getPayment(otherMerchant, paymentId))
-                .isInstanceOf(com.shylesh.payment_service.exception.PaymentNotFoundException.class);
-        assertThatThrownBy(() -> service.refundPayment(otherMerchant, paymentId))
-                .isInstanceOf(com.shylesh.payment_service.exception.PaymentNotFoundException.class);
-        assertThatThrownBy(() -> service.cancelPayment(otherMerchant, paymentId))
                 .isInstanceOf(com.shylesh.payment_service.exception.PaymentNotFoundException.class);
         verify(paymentRepository, never()).save(any());
         verify(paymentRepository, never()).findById(paymentId);

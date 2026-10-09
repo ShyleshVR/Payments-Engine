@@ -14,10 +14,11 @@ http://localhost ──(Service type LoadBalancer :80)──▶ api-gateway ×2 
       ├── /api/v1/ledger/**               ─▶ ledger-service ×2
       └── /api/v1/webhooks/**             ─▶ webhook-service ×2
       notification-service ×2 (no public API)
+      processor-simulator ×2 (card processor stand-in, internal only; see SAGA.md)
 
 namespace payflow:
-  postgres   StatefulSet, 1 instance, 5 databases (one per service, each with its own user)
-  kafka      StatefulSet, 1 KRaft broker, topics with 3 partitions
+  postgres   StatefulSet, 1 instance, 6 databases (one per service, each with its own user)
+  kafka      StatefulSet, 1 KRaft broker, topics with 3 partitions (events + saga commands/replies)
   redis      rate-limit buckets, idempotency cache
   prometheus (Kubernetes pod discovery) · grafana (provisioned dashboard) · jaeger (OTLP traces)
 ```
@@ -96,7 +97,8 @@ and the same credentials.
 |---|---|---|---|---|
 | api-gateway | Deployment + **LoadBalancer** Service | 2 (HPA 2–4) | 80 → 8085 | Only public entry point |
 | merchant-service | Deployment | 2 | 8084 | Authorization server; signing key from a Secret |
-| payment-service | Deployment | 2 (HPA 2–4) | 8080 | Outbox relay on every replica |
+| payment-service | Deployment | 2 (HPA 2–4) | 8080 | Saga orchestrator and outbox relay on every replica |
+| processor-simulator | Deployment | 2 | 8086 | Card processor stand-in; no gateway route |
 | ledger-service | Deployment | 2 | 8082 | Kafka consumer group `ledger-service` |
 | notification-service | Deployment | 2 | 8081 | No HTTP API exposed through the gateway |
 | webhook-service | Deployment | 2 | 8083 | Dispatchers on every replica |
@@ -212,6 +214,8 @@ have fewer.
 | `payment-created.DLT` | payment-service | 3 | — |
 | `webhook-deliveries.DLT` | webhook-service | 3 | merchant id |
 | `notification-events.DLT` | notification-service | 3 | payment id |
+| `ledger-commands` (+ `.DLT`) | payment-service | 3 | payment id (saga commands to the ledger) |
+| `ledger-replies` (+ `.DLT`) | ledger-service | 3 | payment id (replies to the orchestrator) |
 
 A dead-letter topic needs **at least as many partitions as its source**, because the
 dead-letter recoverer writes each record to the same partition number it came from.
@@ -266,7 +270,11 @@ old one is stopped, so capacity never drops below the replica count during a dep
   count, not by CPU.
 - **PodDisruptionBudgets** keep at least one pod of every application through voluntary
   disruptions (node drains, upgrades).
-- Resources: apps request 200m CPU / 512Mi and are limited to 768Mi of memory, with no CPU limit
+- **PriorityClass `payflow-infrastructure`** for Postgres, Kafka and Redis. Every application
+  waits for them, so on a full node they may preempt application pods. Without it, a rollout of
+  all deployments at once left the restarted Postgres pod unschedulable while the new
+  application pods waited for Postgres, a deadlock seen on the single-node cluster.
+- Resources: apps request 200m CPU / 512Mi (384Mi in the local overlay) and are limited to 768Mi of memory, with no CPU limit
   so startup isn't throttled. The JVM sizes its heap from the limit
   (`-XX:MaxRAMPercentage=75`) and exits on `OutOfMemoryError`, so Kubernetes restarts it
   instead of leaving it half-broken.
@@ -285,12 +293,14 @@ Nothing in the code knows it is running in Kubernetes: the same jars run locally
 
 | Secret | Keys | Used by |
 |---|---|---|
-| `payflow-db` | `postgres-password`, `<service>-password` × 5 | Postgres init script and each service's datasource |
-| `payflow-auth` | `admin-client-secret`, `grafana-admin-password` | merchant-service bootstrap admin client, Grafana |
+| `payflow-db` | `postgres-password`, `<service>-password` × 6 | Postgres init script and each service's datasource |
+| `payflow-auth` | `admin-client-secret`, `grafana-admin-password`, `processor-api-key` | merchant-service bootstrap admin client, Grafana, payment-service → processor-simulator |
 | `payflow-signing-key` | `signing-key.pem` (RSA 2048, PKCS#8) | merchant-service |
 
-The passwords are random. Postgres creates the five databases and users from them **on first
-start only** (`postgres-init.sh`), which is why the script never overwrites existing files.
+The passwords are random, and the script never changes an existing value (keys added in later
+versions are appended). `postgres-init.sh` creates the databases and users; the image runs it only
+on an empty volume, so `k8s-up.sh` re-runs it (it is idempotent) to add databases introduced
+later, such as `processor_db`.
 Kustomize adds a content hash to generated names (`payflow-db-tt856dcb4d`), so changing a secret
 rolls the pods that use it.
 
@@ -322,10 +332,10 @@ Operator, Sealed Secrets, Vault) instead of local files.
   `k8s-up.sh` renders with `kubectl kustomize … | kubectl apply -f -` instead of
   `kubectl apply -k`.
 - **Traces:** every service, the gateway included, exports OTLP over HTTP to
-  `http://jaeger:4318`. A payment produces two traces. The API call is one trace (gateway →
-  payment-service). The outbox relay publishes later from a scheduled job, so publishing starts
-  its own trace: relay → Kafka → ledger, notification and webhook consumers. Joining them would
-  require storing the request's `traceparent` in the outbox row; that's not built yet.
+  `http://jaeger:4318`. A payment is **one trace**: the request's `traceparent` is stored on the
+  saga and on every outbox row and continued by the saga worker and both outbox relays, so the
+  API call, processor calls, ledger commands and replies, and the event consumers all join it
+  (see [SAGA.md](SAGA.md#observability)).
 
 ## CI
 
@@ -351,7 +361,7 @@ its pom excludes it.
 | Gateway retries only idempotent methods, and only transport failures | Absorbs a pod dying mid-request without risking a duplicate write | A POST cut off by a dying pod returns 502; the client retries it with its `Idempotency-Key` |
 | Rate limiter **fails open** when Redis is down | Losing a protective limit is better than rejecting all traffic; Redis isn't in the readiness check either | No limit while Redis is down (Lettuce logs reconnect warnings; responses then show `X-RateLimit-Remaining: -1`) |
 | Anonymous callers keyed by peer address, not `X-Forwarded-For` | The header is attacker-controlled | Behind a proxy or NAT, many clients share one bucket. With Docker Desktop's LoadBalancer, all outside callers may appear from one address |
-| One Postgres instance, five databases and users | Database-per-service isolation kept at a fraction of the memory | One failure domain; production would use one managed instance or HA cluster per service |
+| One Postgres instance, six databases and users | Database-per-service isolation kept at a fraction of the memory | One failure domain; production would use one managed instance or HA cluster per service |
 | One Kafka broker, replication factor 1 | Local footprint | No broker fault tolerance; production: 3+ brokers, RF 3, `min.insync.replicas` 2 (`PAYFLOW_KAFKA_REPLICATION_FACTOR`) |
 | Redis without persistence | It holds rate-limit buckets and an idempotency cache (the database stays authoritative) | A restart resets the limits |
 | Init containers wait for Postgres/Kafka | Avoids crash-loop backoff on a fresh cluster | Startup ordering in the manifests; the services still handle outages after startup on their own |
@@ -396,7 +406,7 @@ would be matched by WebFlux's handler mapping *before* the gateway's route mappi
 would never pass through the routes and their filters. An early version of the tests passed
 security checks that way while the rate limiter never ran.
 
-**Manifests:** the rendered overlay (45 resources) passes kubeconform `-strict` against the
+**Manifests:** the rendered overlay (48 resources, with processor-simulator) passes kubeconform `-strict` against the
 Kubernetes 1.31 schemas.
 
 **On the cluster** (Docker Desktop Kubernetes 1.34, all traffic through `http://localhost`):

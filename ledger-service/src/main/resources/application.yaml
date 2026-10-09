@@ -41,6 +41,24 @@ spring:
     listener:
       observation-enabled: true
 
+# Replies to the saga orchestrator go through a transactional outbox (see OutboxRelay).
+outbox:
+  publisher:
+    poll-interval: PT1S
+    batch-size: 100
+    send-timeout: 15s
+    initial-backoff: 1s
+    max-backoff: 1m
+  cleanup:
+    interval: PT1H
+    retention: 7d
+
+payflow:
+  kafka:
+    # Partitions of the topics this service creates (ledger-replies and its DLT).
+    partitions: 3
+    replication-factor: 1
+
 management:
   endpoint:
     health:

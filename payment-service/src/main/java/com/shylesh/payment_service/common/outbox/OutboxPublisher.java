@@ -5,6 +5,7 @@ import com.shylesh.payment_service.event.PaymentEventPublisher;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import com.shylesh.payment_service.common.tracing.TraceContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -41,6 +42,7 @@ public class OutboxPublisher {
     private final TransactionTemplate transactionTemplate;
     private final OutboxProperties properties;
     private final MeterRegistry meterRegistry;
+    private final TraceContext traceContext;
 
     @Scheduled(fixedDelayString = "${outbox.publisher.poll-interval:PT5S}")
     public void publishPendingEvents() {
@@ -71,7 +73,9 @@ public class OutboxPublisher {
         OutboxEvent event = claimed.get();
 
         try {
-            paymentEventPublisher.publish(event)
+            // sent inside the trace of the transaction that wrote the row, so consumers' spans join it
+            traceContext.continueTrace(event.getTraceParent(), "outbox publish " + event.getEventType(),
+                            () -> paymentEventPublisher.publish(event))
                     .get(properties.publisher().sendTimeout().toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

@@ -46,6 +46,15 @@ public class OutboxEvent {
     private LocalDateTime publishedAt;
 
     /** Database-assigned insertion order; used to publish each aggregate's events in order. */
+    /** Kafka topic: payment events, or saga commands to the ledger. */
+    @Column(nullable = false, updatable = false, length = 100)
+    @Builder.Default
+    private String topic = com.shylesh.payment_service.event.Topics.PAYMENT_CREATED;
+
+    /** W3C traceparent of the transaction that wrote the row; the publisher continues that trace. */
+    @Column(name = "trace_parent", updatable = false, length = 100)
+    private String traceParent;
+
     @Column(name = "seq", insertable = false, updatable = false)
     private Long seq;
 

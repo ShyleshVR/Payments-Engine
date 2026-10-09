@@ -12,6 +12,7 @@ labels:
 
 resources:
   - namespace.yaml
+  - infra/priority-class.yaml
   - infra/postgres.yaml
   - infra/kafka.yaml
   - infra/redis.yaml
@@ -20,6 +21,7 @@ resources:
   - observability/grafana.yaml
   - apps/merchant-service.yaml
   - apps/payment-service.yaml
+  - apps/processor-simulator.yaml
   - apps/ledger-service.yaml
   - apps/notification-service.yaml
   - apps/webhook-service.yaml

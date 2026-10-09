@@ -1,5 +1,5 @@
-# Payments API and the transactional outbox relay to Kafka (the relay claims rows with
-# FOR UPDATE SKIP LOCKED, so replicas share the work without double-publishing).
+# Payments API, the payment/refund saga orchestrator and the outbox relay. Saga steps and
+# outbox rows are claimed with FOR UPDATE SKIP LOCKED + leases, so replicas share the work.
 apiVersion: v1
 kind: Service
 metadata:
@@ -78,6 +78,10 @@ spec:
               value: payflow
             - name: SPRING_DATASOURCE_PASSWORD
               valueFrom: { secretKeyRef: { name: payflow-db, key: payment-password } }
+            - name: PAYFLOW_PROCESSOR_BASE_URL
+              value: http://processor-simulator:8086
+            - name: PAYFLOW_PROCESSOR_API_KEY
+              valueFrom: { secretKeyRef: { name: payflow-auth, key: processor-api-key } }
           # Up to 3 minutes for the JVM, Flyway migrations and the rest of startup.
           startupProbe:
             httpGet: { path: /actuator/health/liveness, port: http }

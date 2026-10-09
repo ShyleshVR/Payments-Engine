@@ -27,6 +27,7 @@ spec:
       labels:
         app: kafka
     spec:
+      priorityClassName: payflow-infrastructure
       securityContext:
         # The image runs as appuser (1000); make the volume writable for it.
         fsGroup: 1000

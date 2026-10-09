@@ -1,5 +1,6 @@
 package com.shylesh.webhook_service.payload;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 
 import java.math.BigDecimal;
@@ -13,7 +14,7 @@ import java.util.UUID;
  * paymentId uses the public "pay_" form, the same identifier the payment API returns, so
  * merchants can correlate webhooks with their API calls.
  */
-@JsonPropertyOrder({"payloadVersion", "eventId", "eventType", "paymentId", "merchantId", "amount", "currency", "occurredAt"})
+@JsonPropertyOrder({"payloadVersion", "eventId", "eventType", "paymentId", "merchantId", "amount", "currency", "occurredAt", "failureCode"})
 public record WebhookPayload(
         String payloadVersion,
         UUID eventId,
@@ -22,6 +23,8 @@ public record WebhookPayload(
         UUID merchantId,
         BigDecimal amount,
         String currency,
-        String occurredAt
+        String occurredAt,
+        // 1.1: why a payment failed, was cancelled or a refund failed; absent otherwise
+        @JsonInclude(JsonInclude.Include.NON_NULL) String failureCode
 ) {
 }
