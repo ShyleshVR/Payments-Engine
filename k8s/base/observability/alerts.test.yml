@@ -1,0 +1,259 @@
+# promtool test rules k8s/base/observability/alerts.test.yml
+# Every alert: fires when it should (after its "for"), stays silent when it shouldn't.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: sagas
+    interval: 1m
+    input_series:
+      - series: 'sagas_requires_attention{application="payment-service", pod="payment-1"}'
+        values: '0 1 1 1 1 1 1 1 1 1'
+      - series: 'sagas_oldest_step_age_seconds{application="payment-service", pod="payment-1", type="PAYMENT"}'
+        values: '960x10'
+      - series: 'sagas_oldest_step_age_seconds{application="payment-service", pod="payment-1", type="REFUND"}'
+        values: '30x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SagaRequiresAttention
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: SagaRequiresAttention
+        exp_alerts:
+          - exp_labels: { severity: critical, application: payment-service }
+            exp_annotations:
+              summary: "1 saga(s) parked for an operator"
+              runbook: docs/DEPLOYMENT.md#runbooks
+      - eval_time: 3m
+        alertname: SagaStepStuck
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: SagaStepStuck
+        exp_alerts:
+          - exp_labels: { severity: warning, application: payment-service, type: PAYMENT }
+            exp_annotations:
+              summary: "A PAYMENT saga step has been running for 16m 0s"
+              runbook: docs/DEPLOYMENT.md#runbooks
+
+  - name: outbox
+    interval: 1m
+    input_series:
+      - series: 'outbox_oldest_pending_age_seconds{application="payment-service", pod="payment-1"}'
+        values: '300x10'
+      - series: 'outbox_pending{application="payment-service", pod="payment-1"}'
+        values: '5x10'
+      - series: 'outbox_oldest_pending_age_seconds{application="ledger-service", pod="ledger-1"}'
+        values: '1x10'
+      - series: 'outbox_pending{application="ledger-service", pod="ledger-1"}'
+        values: '0x10'
+      - series: 'outbox_failed{application="payment-service", pod="payment-1"}'
+        values: '0 0 1 1 1 1 1'
+      - series: 'outbox_failed{application="ledger-service", pod="ledger-1"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: OutboxBacklog
+        exp_alerts:
+          - exp_labels: { severity: warning, application: payment-service }
+            exp_annotations:
+              summary: "payment-service outbox is not draining"
+              runbook: docs/DEPLOYMENT.md#runbooks
+      - eval_time: 4m
+        alertname: OutboxMessageParked
+        exp_alerts:
+          - exp_labels: { severity: critical, application: payment-service }
+            exp_annotations:
+              summary: "payment-service has 1 outbox message(s) that can never be published"
+              runbook: docs/DEPLOYMENT.md#runbooks
+
+  - name: kafka
+    interval: 1m
+    input_series:
+      - series: 'kafka_consumergroup_lag{consumergroup="ledger-service", topic="ledger-commands", partition="0"}'
+        values: '400x10'
+      - series: 'kafka_consumergroup_lag{consumergroup="ledger-service", topic="ledger-commands", partition="1"}'
+        values: '200x10'
+      - series: 'kafka_consumergroup_lag{consumergroup="webhook-service", topic="payment-created", partition="0"}'
+        values: '3x10'
+      - series: 'kafka_topic_partition_current_offset{topic="payment-created.DLT", partition="0"}'
+        values: '0 0 0 1 1 1 1 1 1 1'
+      - series: 'kafka_topic_partition_current_offset{topic="payment-created", partition="0"}'
+        values: '0+50x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: KafkaConsumerLag
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: KafkaConsumerLag
+        exp_alerts:
+          - exp_labels: { severity: warning, consumergroup: ledger-service, topic: ledger-commands }
+            exp_annotations:
+              summary: "ledger-service is 600 messages behind on ledger-commands"
+              runbook: docs/DEPLOYMENT.md#runbooks
+      - eval_time: 2m
+        alertname: DeadLettersArriving
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: DeadLettersArriving
+        exp_alerts:
+          - exp_labels: { severity: warning, topic: payment-created.DLT }
+            exp_annotations:
+              summary: "New messages on payment-created.DLT"
+              runbook: docs/DEPLOYMENT.md#runbooks
+
+  - name: processor circuit breaker
+    interval: 1m
+    input_series:
+      - series: 'resilience4j_circuitbreaker_state{application="payment-service", pod="payment-1", name="processor", state="open"}'
+        values: '0 1 1 1 1'
+      - series: 'resilience4j_circuitbreaker_state{application="payment-service", pod="payment-1", name="processor", state="closed"}'
+        values: '1 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ProcessorCircuitOpen
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ProcessorCircuitOpen
+        exp_alerts:
+          - exp_labels: { severity: critical, application: payment-service }
+            exp_annotations:
+              summary: "The card processor circuit breaker is open"
+              runbook: docs/DEPLOYMENT.md#runbooks
+
+  - name: a service with no healthy pod, and one replica down
+    interval: 1m
+    input_series:
+      - series: 'up{job="api-gateway", pod="gw-1"}'
+        values: '1x10'
+      - series: 'up{job="merchant-service", pod="m-1"}'
+        values: '1x10'
+      - series: 'up{job="payment-service", pod="p-1"}'
+        values: '1x10'
+      - series: 'up{job="payment-service", pod="p-2"}'
+        values: '0x10'
+      - series: 'up{job="ledger-service", pod="l-1"}'
+        values: '0x10'
+      - series: 'up{job="webhook-service", pod="w-1"}'
+        values: '1x10'
+      - series: 'up{job="notification-service", pod="n-1"}'
+        values: '1x10'
+      - series: 'up{job="processor-simulator", pod="ps-1"}'
+        values: '1x10'
+      # reconciliation-service has no target at all (scaled to zero)
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels: { severity: critical, job: ledger-service }
+            exp_annotations:
+              summary: "ledger-service has no healthy instance"
+              runbook: docs/DEPLOYMENT.md#runbooks
+          - exp_labels: { severity: critical, job: reconciliation-service }
+            exp_annotations:
+              summary: "reconciliation-service has no healthy instance"
+              runbook: docs/DEPLOYMENT.md#runbooks
+      - eval_time: 3m
+        alertname: InstanceDown
+        exp_alerts:
+          - exp_labels: { severity: warning, job: payment-service, pod: p-2 }
+            exp_annotations:
+              summary: "p-2 (payment-service) is down"
+              runbook: docs/DEPLOYMENT.md#runbooks
+          - exp_labels: { severity: warning, job: ledger-service, pod: l-1 }
+            exp_annotations:
+              summary: "l-1 (ledger-service) is down"
+              runbook: docs/DEPLOYMENT.md#runbooks
+
+  - name: kafka unreachable
+    interval: 1m
+    input_series:
+      # the exporter's scrape fails while the broker is down
+      - series: 'up{job="kafka-exporter", pod="ke-1"}'
+        values: '1 1 0x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KafkaUnreachable
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: KafkaUnreachable
+        exp_alerts:
+          - exp_labels: { severity: critical, job: kafka-exporter }
+            exp_annotations:
+              summary: "Kafka is unreachable (kafka-exporter cannot read the broker)"
+              runbook: docs/DEPLOYMENT.md#runbooks
+      # reported once, as Kafka, not also as a down instance
+      - eval_time: 5m
+        alertname: InstanceDown
+        exp_alerts: []
+
+  - name: gateway errors
+    interval: 1m
+    input_series:
+      - series: 'http_server_requests_seconds_count{application="api-gateway", status="500"}'
+        values: '0+10x15'
+      - series: 'http_server_requests_seconds_count{application="api-gateway", status="200"}'
+        values: '0+90x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GatewayErrorRate
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "10% of requests through the gateway fail with 5xx"
+              runbook: docs/DEPLOYMENT.md#runbooks
+
+  - name: reconciliation discrepancies and failures
+    interval: 1m
+    input_series:
+      - series: 'reconciliation_discrepancies{application="reconciliation-service", pod="r-1", type="CAPTURED_NOT_SETTLED"}'
+        values: '2x5'
+      - series: 'reconciliation_discrepancies{application="reconciliation-service", pod="r-1", type="DUPLICATE"}'
+        values: '0x5'
+      - series: 'reconciliation_runs_total{application="reconciliation-service", pod="r-1", status="FAILED", trigger="SCHEDULED"}'
+        values: '0 0 1 1 1'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ReconciliationDiscrepancies
+        exp_alerts:
+          - exp_labels: { severity: critical, type: CAPTURED_NOT_SETTLED }
+            exp_annotations:
+              summary: "Reconciliation found 2 CAPTURED_NOT_SETTLED discrepancy(ies)"
+              runbook: docs/RECONCILIATION.md#runbook
+      - eval_time: 4m
+        alertname: ReconciliationRunFailed
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "A reconciliation run failed"
+              runbook: docs/RECONCILIATION.md#runbook
+
+  - name: reconciliation never succeeding
+    interval: 1m
+    input_series:
+      # last success stuck at time 0
+      - series: 'reconciliation_last_success_timestamp_seconds{application="reconciliation-service", pod="r-1"}'
+        values: '0x1700'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: ReconciliationNotRun
+        exp_alerts: []
+      - eval_time: 27h
+        alertname: ReconciliationNotRun
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "No successful reconciliation for over 26 hours"
+              runbook: docs/RECONCILIATION.md#runbook
+
+  - name: reconciliation succeeding daily
+    interval: 1m
+    input_series:
+      # always "just now"
+      - series: 'reconciliation_last_success_timestamp_seconds{application="reconciliation-service", pod="r-1"}'
+        values: '0+60x1700'
+    alert_rule_test:
+      - eval_time: 27h
+        alertname: ReconciliationNotRun
+        exp_alerts: []

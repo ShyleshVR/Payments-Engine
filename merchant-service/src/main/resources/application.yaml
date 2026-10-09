@@ -28,6 +28,13 @@ payflow:
       client-id: payflow-admin
       # Local development default only; set PAYFLOW_ADMIN_CLIENT_SECRET anywhere else.
       client-secret: ${PAYFLOW_ADMIN_CLIENT_SECRET:local-dev-admin-secret}
+    # Internal services calling other services' APIs, each with only what it needs.
+    # A client with a blank secret is not registered.
+    service-clients:
+      - client-id: reconciliation-service
+        # Local development default only; set PAYFLOW_RECONCILIATION_CLIENT_SECRET anywhere else.
+        client-secret: ${PAYFLOW_RECONCILIATION_CLIENT_SECRET:local-dev-reconciliation-secret}
+        scopes: [ledger:admin, payments:audit]
 
 management:
   endpoint:

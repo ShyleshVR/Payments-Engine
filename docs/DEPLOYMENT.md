@@ -2,7 +2,7 @@
 
 PayFlow runs on Kubernetes behind a single public entry point, the **API gateway**, with two
 replicas of every service. All the platform's dependencies (Postgres, Kafka, Redis, Prometheus,
-Grafana and Jaeger) run in the same cluster. The manifests are plain Kustomize, the target is
+Alertmanager, Grafana and Jaeger) run in the same cluster. The manifests are plain Kustomize, the target is
 Docker Desktop's built-in Kubernetes, and GitHub Actions tests every service, builds the images
 and validates the manifests on every push to `main` and every pull request.
 
@@ -12,15 +12,17 @@ http://localhost ──(Service type LoadBalancer :80)──▶ api-gateway ×2 
       ├── /oauth2/**, /api/v1/merchants/** ─▶ merchant-service ×2   (token endpoint: no JWT needed)
       ├── /api/v1/payments/**             ─▶ payment-service ×2 (HPA 2–4)
       ├── /api/v1/ledger/**               ─▶ ledger-service ×2
-      └── /api/v1/webhooks/**             ─▶ webhook-service ×2
+      ├── /api/v1/webhooks/**             ─▶ webhook-service ×2
+      └── /api/v1/reconciliation/**       ─▶ reconciliation-service ×2 (daily job; see RECONCILIATION.md)
       notification-service ×2 (no public API)
       processor-simulator ×2 (card processor stand-in, internal only; see SAGA.md)
 
 namespace payflow:
-  postgres   StatefulSet, 1 instance, 6 databases (one per service, each with its own user)
+  postgres   StatefulSet, 1 instance, 7 databases (one per service, each with its own user)
   kafka      StatefulSet, 1 KRaft broker, topics with 3 partitions (events + saga commands/replies)
   redis      rate-limit buckets, idempotency cache
-  prometheus (Kubernetes pod discovery) · grafana (provisioned dashboard) · jaeger (OTLP traces)
+  prometheus (Kubernetes pod discovery, alert rules) · alertmanager ─▶ alert-sink (or Slack)
+  kafka-exporter (consumer lag) · grafana (provisioned dashboard) · jaeger (OTLP traces)
 ```
 
 ## Contents
@@ -35,10 +37,11 @@ namespace payflow:
 8. [Configuration and secrets](#configuration-and-secrets)
 9. [Pod security](#pod-security)
 10. [Observability](#observability)
-11. [CI](#ci)
-12. [Design decisions and trade-offs](#design-decisions-and-trade-offs)
-13. [Testing](#testing)
-14. [File map](#file-map)
+11. [Alerting](#alerting)
+12. [CI](#ci)
+13. [Design decisions and trade-offs](#design-decisions-and-trade-offs)
+14. [Testing](#testing)
+15. [File map](#file-map)
 
 ---
 
@@ -102,10 +105,14 @@ and the same credentials.
 | ledger-service | Deployment | 2 | 8082 | Kafka consumer group `ledger-service` |
 | notification-service | Deployment | 2 | 8081 | No HTTP API exposed through the gateway |
 | webhook-service | Deployment | 2 | 8083 | Dispatchers on every replica |
+| reconciliation-service | Deployment | 2 | 8087 | Daily reconciliation; one replica runs it at a time (ShedLock) |
 | postgres | StatefulSet + 2Gi PVC | 1 | 5432 | `max_connections=300` for all replicas' pools |
 | kafka | StatefulSet + 2Gi PVC | 1 | 9092 | KRaft (no ZooKeeper), `apache/kafka:4.0.0` |
 | redis | Deployment | 1 | 6379 | No persistence; keys have TTLs |
 | prometheus / grafana / jaeger | Deployment | 1 | 9090 / 3000 / 16686 | LoadBalancer in the local overlay |
+| alertmanager | Deployment | 1 | 9093 | Routes alerts; LoadBalancer in the local overlay |
+| alert-sink | Deployment | 1 | 9095 | Logs each notification as a JSON line |
+| kafka-exporter | Deployment | 1 | 9308 | Consumer-group lag and topic offsets from the broker |
 
 Every application pod also gets a PodDisruptionBudget (`minAvailable: 1`) and a
 `wait-for-dependencies` init container. Spring Boot exits when its database is unreachable at
@@ -293,8 +300,8 @@ Nothing in the code knows it is running in Kubernetes: the same jars run locally
 
 | Secret | Keys | Used by |
 |---|---|---|
-| `payflow-db` | `postgres-password`, `<service>-password` × 6 | Postgres init script and each service's datasource |
-| `payflow-auth` | `admin-client-secret`, `grafana-admin-password`, `processor-api-key` | merchant-service bootstrap admin client, Grafana, payment-service → processor-simulator |
+| `payflow-db` | `postgres-password`, `<service>-password` × 7 | Postgres init script and each service's datasource |
+| `payflow-auth` | `admin-client-secret`, `grafana-admin-password`, `processor-api-key`, `reconciliation-client-secret` | merchant-service bootstrap admin client, Grafana, payment-service and reconciliation-service → processor-simulator, reconciliation-service's OAuth2 client |
 | `payflow-signing-key` | `signing-key.pem` (RSA 2048, PKCS#8) | merchant-service |
 
 The passwords are random, and the script never changes an existing value (keys added in later
@@ -337,6 +344,139 @@ Operator, Sealed Secrets, Vault) instead of local files.
   API call, processor calls, ledger commands and replies, and the event consumers all join it
   (see [SAGA.md](SAGA.md#observability)).
 
+## Alerting
+
+Prometheus evaluates the rules in `k8s/base/observability/alerts.yml` every 15 seconds and sends
+firing alerts to **Alertmanager**. Alertmanager groups them per alert and service, waits 10s to
+batch related alerts, and repeats an unresolved alert every 4 hours. While a whole service is
+down, it suppresses that service's warnings. Resolved notifications are sent too.
+
+- **Where notifications go.** By default to **alert-sink**, an in-cluster receiver that logs each
+  one as a JSON line (`kubectl -n payflow logs deploy/alert-sink`); in production that would be a
+  pager or chat integration. The Alertmanager UI is at `http://localhost:9093`, and Grafana shows
+  firing alerts.
+- **Slack (optional).** Put a Slack incoming-webhook URL in
+  `k8s/overlays/local/secrets/slack-webhook-url` and run `scripts/k8s-up.sh`. It then deploys the
+  `local-slack` overlay, and every alert also goes to Slack. Without that file, nothing leaves
+  the cluster.
+- **Tested rules.** `alerts.test.yml` checks every rule with `promtool test rules`: each fires
+  when it should, after its `for` duration, with the right labels and summary, and stays silent
+  otherwise. CI runs it, together with `amtool check-config` on the Alertmanager configuration.
+
+| Alert | Severity | Fires when |
+|---|---|---|
+| `SagaRequiresAttention` | critical | A saga is parked for an operator (1m) |
+| `SagaStepStuck` | warning | A saga step has run for over 15 minutes (5m) |
+| `OutboxBacklog` | warning | The oldest unpublished outbox message is over 2 minutes old, or over 1000 are waiting (2m) |
+| `OutboxMessageParked` | critical | An outbox message can never be published (1m) |
+| `KafkaConsumerLag` | warning | A consumer group is over 500 messages behind on a topic (5m) |
+| `DeadLettersArriving` | warning | New messages on any `.DLT` topic |
+| `ProcessorCircuitOpen` | critical | The card processor circuit breaker is open (1m) |
+| `KafkaUnreachable` | critical | kafka-exporter can't read the broker (2m) |
+| `ServiceDown` | critical | A service has no healthy instance, including when it has no pods (2m) |
+| `InstanceDown` | warning | One replica is down (2m); not kafka-exporter, which is `KafkaUnreachable` |
+| `GatewayErrorRate` | warning | Over 5% of gateway responses are 5xx (5m) |
+| `ReconciliationDiscrepancies`, `ReconciliationNotRun`, `ReconciliationRunFailed` | critical / warning | See [RECONCILIATION.md](RECONCILIATION.md#metrics-and-alerts) |
+
+Two metrics sources were added for these alerts:
+- **Backlog gauges** in payment-service and the ledger: `outbox_pending`, `outbox_failed`,
+  `outbox_oldest_pending_age_seconds`, and in payment-service also
+  `sagas_oldest_step_age_seconds`. They are read from the database, so every replica reports the
+  same values.
+- **kafka-exporter**, which reads consumer lag from the broker itself, so lag shows even when
+  every consumer is dead.
+
+### Verified on the cluster
+
+Each alert in this table fired for a real failure on the local cluster, reached alert-sink, and
+resolved on its own once the failure was fixed. The rest (`OutboxMessageParked`,
+`DeadLettersArriving`, `GatewayErrorRate`, `ReconciliationNotRun`, `ReconciliationRunFailed`)
+are covered by the promtool tests only:
+
+| Scenario | Alerts (time after the failure began) |
+|---|---|
+| ledger-service scaled to 0 while 700 payments from 7 merchants settle | `ServiceDown` (3 min; `InstanceDown` suppressed by the inhibit rule), `KafkaConsumerLag` (3,500 behind on `ledger-commands`, 6 min), `SagaStepStuck` (21.5 min; the oldest step had been running 20m 11s) |
+| Processor outage of 13 minutes, under 1 payment/s | `ProcessorCircuitOpen` (within 2 min of traffic arriving); resolved when the outage ended. Without traffic the breaker can't open: it needs 10 calls |
+| A manual capture requested during the outage | Its outcome was unknown for 10 minutes, so the saga was parked: `SagaRequiresAttention`. After `POST …/saga/retry` the capture completed and the alert resolved |
+| Kafka scaled to 0 while 20 payments were created | `OutboxBacklog` (4.8 min) and `KafkaUnreachable` (2.7 min); after Kafka returned, all 20 settled and both resolved |
+| Reconciliation with injected corruption | See [RECONCILIATION.md](RECONCILIATION.md#on-the-cluster) |
+
+After the incident, the day's reconciliation (916 payments, including those failed or delayed
+by the outages) matched every payment, with 0 discrepancies.
+
+These runs exposed three problems, all fixed:
+- **Stale consumer offsets.** `KafkaConsumerLag` kept firing for `ledger-service` on
+  `payment-created`, a topic the ledger stopped consuming when the sagas arrived. Its old
+  committed offsets were still there, so lag grew with every payment. The alert was right:
+  committed offsets that nobody consumes look exactly like dead consumers. The offsets were
+  deleted, and the runbook now covers the case.
+- **No Kafka alert.** With Kafka down, the only signal was a generic warning that kafka-exporter
+  was down. `KafkaUnreachable` now names the actual failure, and InstanceDown leaves the
+  exporter out.
+- **One reconciliation alert bug** (see RECONCILIATION.md).
+
+### Runbooks
+
+**SagaRequiresAttention**
+1. `GET /api/v1/payments/{id}/saga` (operator token) shows where the saga stopped and why
+   (`lastError`, step history).
+2. Fix the cause: for a capture whose outcome was never learned, ask the processor; for a ledger
+   rejection, compare the ledger's postings.
+3. `POST /api/v1/payments/{id}/saga/retry` resumes the step under the same idempotency key.
+
+**SagaStepStuck**
+1. Check `ProcessorCircuitOpen` and `KafkaConsumerLag`. A step only waits on the processor or the
+   ledger.
+2. Restore the dependency; steps resume by themselves (retries with backoff, re-sent ledger
+   commands).
+
+**OutboxBacklog / OutboxMessageParked**
+1. **Backlog:** Kafka is usually unreachable from the service. Check the Kafka pod and the
+   service's logs. Messages are safe in the outbox and drain once Kafka is back.
+2. **Parked:** the message can't be serialized or is too large. Find it with
+   `SELECT * FROM outbox_event WHERE status = 'FAILED'`, fix or discard it, and later messages of
+   that payment resume.
+
+**KafkaConsumerLag**
+1. Check that the group's pods are up. If they are, check their logs: an infrastructure error
+   (the database down) holds the partition by design until it recovers.
+2. If they're healthy but slow, scale the deployment. Parallelism is capped by the partition
+   count (3).
+3. If the topic has **no consumer at all** (`kafka-consumer-groups.sh --describe --group <group>`
+   shows `-` as the consumer id), the group may have stopped reading that topic in a release
+   and left its committed offsets behind. Lag there grows forever. Once you've confirmed the
+   subscription was retired on purpose, delete them:
+   `kafka-consumer-groups.sh --delete-offsets --group <group> --topic <topic>`.
+
+**DeadLettersArriving**
+1. Inspect the message:
+   `kafka-console-consumer.sh --topic <topic> --from-beginning --property print.headers=true`.
+   The exception is in the headers.
+2. Fix the cause, then republish to the source topic or discard.
+
+**ProcessorCircuitOpen**
+1. Check processor-simulator (or the real processor's status page).
+2. Payments wait in PROCESSING; those not authorized within 2 minutes are reversed and fail with
+   `processor_unavailable`.
+3. The breaker closes by itself after successful trial calls.
+
+**KafkaUnreachable**
+1. `kubectl -n payflow get pod kafka-0`, then `describe` and `logs`. If Kafka is running, check
+   the kafka-exporter pod itself.
+2. Nothing is lost meanwhile: services keep writing messages to their outboxes (expect
+   `OutboxBacklog`), and the outboxes drain once the broker is back.
+
+**ServiceDown / InstanceDown**
+1. `kubectl -n payflow get pods -l app=<service>`, then `describe` and `logs`.
+2. Typical causes: crash loop (bad config or secret), unschedulable (memory), or a failing
+   startup probe (database unreachable).
+
+**GatewayErrorRate**
+1. See which route the 5xx come from (`http_server_requests_seconds_count{application="api-gateway"}`
+   by `uri`).
+2. A 502/503 means the upstream service is dropping connections or has no ready pods (see
+   `ServiceDown`); a 500 is the service's own error (its logs).
+
 ## CI
 
 `.github/workflows/ci.yml`, on pushes to `main` and on pull requests:
@@ -375,12 +515,15 @@ its pom excludes it.
 
 | Module | Tests | Notes |
 |---|---|---|
-| payment-service | 30 | |
-| ledger-service | 23 | |
-| notification-service | 33 | context-load test excluded |
-| webhook-service | 123 | |
-| merchant-service | 28 | including `PemFileJwkSourceTest` and `PemSigningKeyIntegrationTest` (Testcontainers): the PEM key signs, its thumbprint is the `kid`, no database key is created |
-| api-gateway | 15 | see below |
+| payment-service | 80 | including the saga scenarios (see SAGA.md) and the audit lookup |
+| ledger-service | 31 | including the audit endpoints and outbox gauges |
+| notification-service | 34 | context-load test excluded |
+| webhook-service | 124 | |
+| merchant-service | 32 | including `PemFileJwkSourceTest` and `PemSigningKeyIntegrationTest` (Testcontainers): the PEM key signs, its thumbprint is the `kid`, no database key is created; and the configured service clients |
+| api-gateway | 16 | see below |
+| processor-simulator | 17 | including the settlement report |
+| reconciliation-service | 25 | see [RECONCILIATION.md](RECONCILIATION.md#testing) |
+| alert rules | every rule | `promtool test rules alerts.test.yml`; `amtool check-config` on both Alertmanager configurations |
 
 The api-gateway tests run the real gateway (routes, security, rate limiter on a Redis
 container) in front of a stub upstream HTTP server, with mocked JWT decoding:
@@ -406,7 +549,7 @@ would be matched by WebFlux's handler mapping *before* the gateway's route mappi
 would never pass through the routes and their filters. An early version of the tests passed
 security checks that way while the rate limiter never ran.
 
-**Manifests:** the rendered overlay (48 resources, with processor-simulator) passes kubeconform `-strict` against the
+**Manifests:** the rendered overlays (`local`: 59 resources; `local-slack`: 60) pass kubeconform `-strict` against the
 Kubernetes 1.31 schemas.
 
 **On the cluster** (Docker Desktop Kubernetes 1.34, all traffic through `http://localhost`):
@@ -438,11 +581,15 @@ get 503.
 |---|---|
 | `api-gateway/` | Gateway: `security/SecurityConfig` (edge JWT rules, decoder), `security/JsonSecurityErrorHandler`, `filter/RateLimitKeyResolver`, `filter/RequestIdFilter`, `web/UpstreamErrorHandler` (502/503 mapping), `web/JsonErrorWriter`; routes, rate limit and retry in `application.yaml` |
 | `*/Dockerfile`, `*/.dockerignore` | Layered images, non-root UID 1001 |
-| `k8s/base/` | Namespace, shared ConfigMap, `apps/` (Deployment + Service + PDB per app, HPAs), `infra/` (Postgres + init script, Kafka, Redis), `observability/` (Prometheus + scrape config + RBAC, Grafana, Jaeger) |
+| `k8s/base/` | Namespace, shared ConfigMap, `apps/` (Deployment + Service + PDB per app, HPAs), `infra/` (Postgres + init script, Kafka, Redis), `observability/` (Prometheus + scrape config + RBAC, Grafana, Jaeger, Alertmanager, alert-sink, kafka-exporter) |
+| `k8s/base/observability/alerts.yml`, `alerts.test.yml` | Alert rules and their `promtool` unit tests |
+| `k8s/base/observability/alertmanager.yml`, `alert_sink.py` | Routing, inhibition and the in-cluster receiver |
 | `k8s/overlays/local/` | Image tags, generated Secrets, LoadBalancer UIs, webhook dev settings |
+| `k8s/overlays/local-slack/` | `local` plus a Slack receiver, used when `secrets/slack-webhook-url` exists |
 | `scripts/build-images.sh` | `mvn package` + `docker build` per service |
 | `scripts/generate-local-secrets.sh` | Random passwords and the signing key, created once |
 | `scripts/k8s-up.sh` / `k8s-down.sh` | Deploy and wait / delete the namespace |
-| `.github/workflows/ci.yml` | Test matrix, image build, manifest validation |
+| `.github/workflows/ci.yml` | Test matrix, image build, alert-rule tests, Alertmanager config check, manifest validation |
+| `.gitattributes` | LF line endings for scripts mounted into Linux containers |
 | `*/config/KafkaTopicsConfig.java` | Explicit topics with partition counts |
 | `merchant-service/.../auth/PemFileJwkSource`, `SigningKeyConfig` | Signing key from a mounted PEM |

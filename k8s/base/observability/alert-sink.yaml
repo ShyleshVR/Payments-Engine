@@ -1,0 +1,45 @@
+# Local receiver for Alertmanager notifications: logs them (a pager or chat in production).
+apiVersion: v1
+kind: Service
+metadata:
+  name: alert-sink
+spec:
+  selector:
+    app: alert-sink
+  ports:
+    - name: http
+      port: 9095
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-sink
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alert-sink
+  template:
+    metadata:
+      labels:
+        app: alert-sink
+    spec:
+      containers:
+        - name: alert-sink
+          image: python:3.12-alpine
+          command: ["python", "-u", "/app/alert_sink.py"]
+          ports:
+            - containerPort: 9095
+          readinessProbe:
+            httpGet: { path: /, port: 9095 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 10m, memory: 24Mi }
+            limits: { memory: 64Mi }
+          volumeMounts:
+            - name: app
+              mountPath: /app
+      volumes:
+        - name: app
+          configMap:
+            name: alert-sink

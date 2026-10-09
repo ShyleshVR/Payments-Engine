@@ -47,14 +47,22 @@ public class Authorization {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    @Column(name = "captured_at")
+    private LocalDateTime capturedAt;
+
+    @Column(name = "voided_at")
+    private LocalDateTime voidedAt;
+
     public void capture(LocalDateTime now) {
         this.status = AuthorizationStatus.CAPTURED;
         this.capturedAmount = amount;
+        this.capturedAt = now;
         this.updatedAt = now;
     }
 
     public void voidAuthorization(LocalDateTime now) {
         this.status = AuthorizationStatus.VOIDED;
+        this.voidedAt = now;
         this.updatedAt = now;
     }
 

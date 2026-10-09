@@ -48,4 +48,19 @@ public interface PaymentSagaRepository extends JpaRepository<PaymentSaga, UUID> 
     List<PaymentSaga> findByPaymentIdOrderByCreatedAtAsc(UUID paymentId);
 
     long countByState(SagaState state);
+
+    /**
+     * When the oldest step still in progress started, for one saga type. Sagas waiting for the
+     * merchant (MANUAL capture) or parked for an operator are not "in progress" and are excluded.
+     */
+    @Query("""
+            SELECT MIN(s.stepStartedAt) FROM PaymentSaga s
+            WHERE s.finishedAt IS NULL AND s.type = :type
+              AND s.state NOT IN (com.shylesh.payment_service.saga.SagaState.AWAITING_CAPTURE,
+                                  com.shylesh.payment_service.saga.SagaState.REQUIRES_ATTENTION)
+            """)
+    LocalDateTime findOldestStepStartInProgress(@Param("type") SagaType type);
+
+    @Query("SELECT s.paymentId FROM PaymentSaga s WHERE s.finishedAt IS NULL AND s.paymentId IN :paymentIds")
+    List<UUID> findPaymentIdsWithActiveSaga(@Param("paymentIds") java.util.Collection<UUID> paymentIds);
 }

@@ -19,9 +19,13 @@ resources:
   - observability/jaeger.yaml
   - observability/prometheus.yaml
   - observability/grafana.yaml
+  - observability/alertmanager.yaml
+  - observability/alert-sink.yaml
+  - observability/kafka-exporter.yaml
   - apps/merchant-service.yaml
   - apps/payment-service.yaml
   - apps/processor-simulator.yaml
+  - apps/reconciliation-service.yaml
   - apps/ledger-service.yaml
   - apps/notification-service.yaml
   - apps/webhook-service.yaml
@@ -48,6 +52,13 @@ configMapGenerator:
   - name: prometheus-config
     files:
       - prometheus.yml=observability/prometheus.yml
+      - alerts.yml=observability/alerts.yml
+  - name: alertmanager-config
+    files:
+      - alertmanager.yml=observability/alertmanager.yml
+  - name: alert-sink
+    files:
+      - alert_sink.py=observability/alert_sink.py
   # Grafana is provisioned from the same files the docker-compose stack uses, so the dashboard
   # has a single source. They live outside this directory, which is why the manifests are
   # rendered with --load-restrictor LoadRestrictionsNone (scripts/k8s-up.sh).

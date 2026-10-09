@@ -64,6 +64,9 @@ class LedgerCommandHandlerIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private io.micrometer.core.instrument.MeterRegistry meterRegistry;
+
     private static LedgerCommand command(LedgerCommandType type, UUID sagaId, UUID paymentId, UUID merchantId, String amount) {
         return new LedgerCommand(UUID.randomUUID(), type.name(), sagaId, paymentId, merchantId, new BigDecimal(amount), "USD");
     }
@@ -104,6 +107,16 @@ class LedgerCommandHandlerIntegrationTest {
         assertThat(replies.getFirst().get("eventType").asText()).isEqualTo("LEDGER_REPLY");
         assertThat(replies.getFirst().get("data").get("commandId").asText()).isEqualTo(settle.getCommandId().toString());
         assertThat(replies.getFirst().get("data").get("outcome").asText()).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    void unpublishedRepliesShowAsOutboxBacklog() {
+        handler.handle(command(LedgerCommandType.SETTLE_PAYMENT, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "1.00"));
+
+        // the relay polls hourly in this test, so the reply is still waiting
+        assertThat(meterRegistry.get("outbox.pending").gauge().value()).isGreaterThanOrEqualTo(1);
+        assertThat(meterRegistry.get("outbox.oldest.pending.age").gauge().value()).isGreaterThanOrEqualTo(0);
+        assertThat(meterRegistry.get("outbox.failed").gauge().value()).isEqualTo(0);
     }
 
     @Test
@@ -217,6 +230,31 @@ class LedgerCommandHandlerIntegrationTest {
         assertThat(noHold.reason()).isEqualTo(LedgerCommandHandler.NO_ACTIVE_HOLD);
         assertThat(wrongAmount.reason()).isEqualTo(LedgerCommandHandler.NO_ACTIVE_HOLD);
         assertThat(balance(merchantId).getReserved()).isEqualByComparingTo("30.00");
+    }
+
+    @Test
+    void auditQueriesListAPeriodsTransactionsAndOpenHolds() {
+        java.time.LocalDateTime from = java.time.LocalDateTime.now().minusMinutes(1);
+        UUID merchantId = merchantWithBalance("90.00");
+        UUID openSaga = UUID.randomUUID();
+        UUID openPayment = UUID.randomUUID();
+        UUID doneSaga = UUID.randomUUID();
+        UUID donePayment = UUID.randomUUID();
+        handler.handle(command(LedgerCommandType.HOLD_REFUND, openSaga, openPayment, merchantId, "20.00"));
+        handler.handle(command(LedgerCommandType.HOLD_REFUND, doneSaga, donePayment, merchantId, "30.00"));
+        handler.handle(command(LedgerCommandType.FINALIZE_REFUND, doneSaga, donePayment, merchantId, "30.00"));
+        java.time.LocalDateTime to = java.time.LocalDateTime.now().plusMinutes(1);
+
+        List<com.shylesh.ledger_service.dto.LedgerTransactionSummary> period = transactionRepository
+                .findSummariesBetween(from, to, org.springframework.data.domain.PageRequest.of(0, 1000)).getContent();
+        List<com.shylesh.ledger_service.dto.LedgerTransactionSummary> open = transactionRepository.findOpenRefundHoldsCreatedBefore(to);
+
+        assertThat(period).filteredOn(t -> t.paymentId().equals(donePayment))
+                .extracting(t -> t.type().name()).containsExactly("REFUND_HOLD", "REFUND");
+        assertThat(period).filteredOn(t -> t.paymentId().equals(donePayment))
+                .allSatisfy(t -> assertThat(t.amount()).isEqualByComparingTo("30.00"));
+        assertThat(open).extracting(com.shylesh.ledger_service.dto.LedgerTransactionSummary::paymentId)
+                .contains(openPayment).doesNotContain(donePayment);
     }
 
     @Test

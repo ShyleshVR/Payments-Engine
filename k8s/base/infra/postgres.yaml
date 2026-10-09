@@ -1,4 +1,4 @@
-# One Postgres instance hosting six databases (one per service, each with its own user).
+# One Postgres instance hosting seven databases (one per service, each with its own user).
 # Production would run one managed instance per service or an operator-managed HA cluster;
 # a single pod keeps the local cluster's footprint small.
 apiVersion: v1
@@ -56,6 +56,8 @@ spec:
               valueFrom: { secretKeyRef: { name: payflow-db, key: merchant-password } }
             - name: PROCESSOR_DB_PASSWORD
               valueFrom: { secretKeyRef: { name: payflow-db, key: processor-password } }
+            - name: RECON_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: payflow-db, key: recon-password } }
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "postgres"]

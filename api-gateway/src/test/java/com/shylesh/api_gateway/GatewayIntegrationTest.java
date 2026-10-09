@@ -117,7 +117,7 @@ class GatewayIntegrationTest {
     @DynamicPropertySource
     static void routeToUpstream(DynamicPropertyRegistry registry) {
         String url = "http://127.0.0.1:" + upstreamServer.getAddress().getPort();
-        for (String route : new String[]{"merchant", "payment", "ledger"}) {
+        for (String route : new String[]{"merchant", "payment", "ledger", "reconciliation"}) {
             registry.add("payflow.gateway.routes." + route, () -> url);
         }
         registry.add("payflow.gateway.routes.webhook", () -> "http://127.0.0.1:" + closedPort);
@@ -255,6 +255,15 @@ class GatewayIntegrationTest {
                 .get().uri("/api/v1/webhooks/subscriptions").exchange()
                 .expectStatus().isEqualTo(HttpStatus.SERVICE_UNAVAILABLE)
                 .expectBody().jsonPath("$.message").isEqualTo("Service temporarily unavailable, please retry");
+    }
+
+    @Test
+    void reconciliationApiIsRouted() {
+        client.mutateWith(mockJwt().jwt(jwt -> jwt.subject("payflow-admin")))
+                .get().uri("/api/v1/reconciliation/runs").exchange()
+                .expectStatus().isOk();
+
+        assertThat(upstreamCalls.get()).isEqualTo(1);
     }
 
     @Test

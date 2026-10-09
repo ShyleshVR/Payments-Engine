@@ -7,8 +7,10 @@ public final class Scopes {
     public static final String PAYMENTS_WRITE = "SCOPE_payments:write";
     /** Merchant: read its own payments. */
     public static final String PAYMENTS_READ = "SCOPE_payments:read";
-    /** Internal operations: drive processing outcomes (process / complete / fail) on any payment. */
+    /** Operators: inspect and resume any payment's saga. */
     public static final String PAYMENTS_OPERATE = "SCOPE_payments:operate";
+    /** Read-only access to any payment (the daily reconciliation). */
+    public static final String PAYMENTS_AUDIT = "SCOPE_payments:audit";
 
     /** JWT claim carrying the merchant a token acts for. Absent on operator tokens. */
     public static final String MERCHANT_ID_CLAIM = "merchant_id";

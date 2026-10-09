@@ -6,13 +6,14 @@ answer gives the claim first and the evidence after it.
 
 ## The pitch
 
-**30 seconds.** "PayFlow is a card-payments backend: seven Spring Boot services on Kubernetes
+**30 seconds.** "PayFlow is a card-payments backend: eight Spring Boot services on Kubernetes
 behind an API gateway. Merchants authenticate with OAuth2, payments are authorized and captured
 against a card processor and booked in a double-entry ledger, and merchants get signed webhooks.
 The interesting part is correctness under failure. A payment is an orchestrated saga with
 compensation, every hop is idempotent, and every message goes through a transactional outbox. I
-verified it by killing pods, taking the processor and the ledger down mid-flow, and reconciling
-every payment across three databases afterwards."
+verified it by killing pods and taking the processor and the ledger down mid-flow, and a daily
+reconciliation job checks the processor, the ledger and the payment statuses against each other,
+with alerts when anything is off."
 
 **2 minutes:** walk the [payment flow](ARCHITECTURE.md#how-a-payment-flows):
 - token issued, then checked at the gateway;
@@ -31,15 +32,18 @@ Then name the three hardest problems and how each is solved:
 
 | | |
 |---|---|
-| Services / databases / Kafka topics | 7 / 6 / 4 main topics plus dead-letter topics |
-| Automated tests | 319, run in CI on every push; 29 for the saga state machine, 15 Testcontainers saga scenarios |
+| Services / databases / Kafka topics | 8 / 7 / 4 main topics plus dead-letter topics |
+| Automated tests | 359, run in CI on every push; 29 for the saga state machine, 15 Testcontainers saga scenarios, 17 for the reconciler; plus promtool tests for every alert rule |
 | Rolling restart under ~12 req/s | 429 requests, 0 failed |
 | Pods force-killed under traffic | ~1,085 requests, 0 failed (after adding gateway retries for idempotent requests) |
 | Processor outage of 45s, 20 payments in flight | Circuit opened; all 20 succeeded afterwards |
 | Ledger scaled to 0 during settlement | Commands re-sent, every payment booked exactly once afterwards |
 | Concurrent refund holds (8 × 30 against a balance of 100) | Exactly 3 succeed; without the row lock the test fails |
 | Concurrent duplicate processor requests (8 identical) | 1 authorization, 8 identical answers |
-| Reconciliation, 52 payments × 3 databases | 0 discrepancies; debits = credits |
+| Reconciliation, 52 payments × 3 databases (by hand, saga phase) | 0 discrepancies; debits = credits |
+| Daily reconciliation after a simulated incident (ledger down, 13-min processor outage, ~950 payments) | 916 payments with money movement, 916 matched, 0 discrepancies |
+| Injected corruption (3 kinds) | Each detected with the right type; alert in alert-sink within ~40s; resolved after the fix and a re-run |
+| Alert rules | 14, each unit-tested with promtool; 9 also fired and resolved for real on the cluster |
 | Autoscaling under ~90 req/s | payment-service and gateway 2 → 4 pods, 9,341 responses, 0 errors |
 
 ## Likely questions
@@ -182,6 +186,24 @@ processor and ledger panels. One trace per payment in Jaeger: the request's trac
 stored with the saga and on every outbox row, and continued wherever work resumes, so the
 asynchronous steps join the original trace.
 
+**What do you alert on?** Symptoms an operator must act on, not every metric: a saga parked
+for a human or a step running over 15 minutes, an outbox that isn't draining, consumer lag, dead
+letters, an open circuit breaker, a service with no healthy pod, and reconciliation
+discrepancies. Each rule has a `promtool` unit test and a runbook. The tests found a real bug:
+`absent(up == 1)` drops the job label, so all services collapsed into one alert.
+
+**How do you know the books are right?** A daily reconciliation, like real payment companies
+run. reconciliation-service reads the processor's settlement report, the ledger and the payment
+statuses through APIs and classifies every disagreement (captured but not booked, booked but not
+captured, amount mismatch, a failed payment still holding funds, ...). Facts are checked on the
+day they happened, matched within a window around midnight, so nothing is checked twice and
+nothing falls between days. Payments mid-saga are reported as pending, not as errors.
+
+**How does a scheduled job run once with several replicas?** ShedLock (a lock row in Postgres
+using the database's clock), plus "one completed run per day" checked before running, plus a
+partial unique index allowing only one running run per day, which also covers a manual run racing
+the scheduler. An hourly catch-up re-runs any recent day that has no completed run.
+
 ## Stories: things that went wrong, and what they taught
 
 - **A test passing for the wrong reason.** The gateway's rate-limit test passed security checks
@@ -198,6 +220,16 @@ asynchronous steps join the original trace.
   memory. The restarted Postgres pod couldn't be scheduled, and the new app pods waited for
   Postgres while the old ones held the memory. Fix: a priority class so infrastructure is always
   scheduled first, and right-sized memory requests.
+- **An alert that went quiet for the wrong reason.** The first reconciliation alert followed
+  only the most recent run. On the first deploy, the catch-up reconciled three days in a row,
+  and the last day was clean, so the alert stayed silent while the day before had 218
+  discrepancies. Fix: alert on each recent day's latest run. Lesson: test what an alert does
+  over a sequence of events, not one state.
+- **Legacy data versus a new control.** The first reconciliation flagged 109 payments: all made
+  before the processor existed, settled through the old operator endpoints. They weren't wrong,
+  just out of scope. Reconciliation now covers processor-backed payments only, decided from
+  each payment's data, not a configured cut-over date. The same migration left the ledger's old
+  offsets on `payment-created`, which the consumer-lag alert caught days later.
 - **The last 0.3% of failures.** Killing a pod dropped 1 of 362 requests: a GET in flight on the
   dying pod. Adding gateway retries for idempotent requests on transport errors only (never
   POSTs, never a service's own 500) brought it to 0 over ~1,085 requests.
@@ -210,6 +242,7 @@ asynchronous steps join the original trace.
 | Payouts don't exist | So merchant balances only shrink through refunds, and the insufficient-balance refund path is reachable only in tests; payouts are the next feature |
 | Polling outboxes and workers | Simple and reliable; change data capture for lower latency at scale |
 | Event classes copied into each service | Explicit and independent, but they can drift; a shared contract module or schema registry is next |
-| No alerting rules yet | The metrics exist (`sagas_requires_attention`, outbox lag, consumer lag); Prometheus alert rules and Alertmanager are next |
+| Alerts go to an in-cluster receiver | No paging or on-call; Slack is one file away, and production would route critical alerts to a pager |
+| Reconciliation is daily | A discrepancy surfaces the next morning; real-time issues have their own alerts. Pre-processor payments are out of scope (no processor record) |
 | Card data | The processor is a simulator with tokens; real card data would bring PCI DSS scope, tokenization and a vault |
 | Random (v4) UUID keys | Unguessable and coordination-free; at high insert rates time-ordered UUIDv7 keys index better, and switching touches only the generator ([ADR-001](adr/ADR-001-payment-identifier.md)) |

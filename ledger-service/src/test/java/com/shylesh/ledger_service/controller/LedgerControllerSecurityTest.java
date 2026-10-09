@@ -27,7 +27,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@WebMvcTest(LedgerController.class)
+@WebMvcTest({LedgerController.class, LedgerAuditController.class})
 @Import({SecurityConfig.class, JsonSecurityErrorHandler.class})
 class LedgerControllerSecurityTest {
 
@@ -39,6 +39,9 @@ class LedgerControllerSecurityTest {
 
     @MockitoBean
     private JwtDecoder jwtDecoder;
+
+    @MockitoBean
+    private com.shylesh.ledger_service.persistence.LedgerTransactionRepository transactionRepository;
 
     private final UUID merchantId = UUID.randomUUID();
 
@@ -53,6 +56,37 @@ class LedgerControllerSecurityTest {
 
     private AccountBalanceResponse balance(LedgerAccountType type, UUID owner) {
         return AccountBalanceResponse.builder().ownerType(type).ownerId(owner).currency("USD").balance(BigDecimal.TEN).build();
+    }
+
+    @Test
+    void auditViewsAreOperatorOnly() throws Exception {
+        mockMvc.perform(get("/api/v1/ledger/transactions").with(merchant())
+                        .param("from", "2026-10-08T00:00:00").param("to", "2026-10-09T00:00:00"))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/v1/ledger/refund-holds/open").with(merchant()).param("createdBefore", "2026-10-09T00:00:00"))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(transactionRepository);
+    }
+
+    @Test
+    void operatorPagesThroughTransactionsOfAPeriod() throws Exception {
+        when(transactionRepository.findSummariesBetween(any(), any(), any()))
+                .thenReturn(new org.springframework.data.domain.SliceImpl<>(List.of(), org.springframework.data.domain.PageRequest.of(0, 500), true));
+
+        mockMvc.perform(get("/api/v1/ledger/transactions").with(operator())
+                        .param("from", "2026-10-08T00:00:00").param("to", "2026-10-09T00:00:00"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.hasNext").value(true));
+    }
+
+    @Test
+    void periodAndPageSizeAreBounded() throws Exception {
+        mockMvc.perform(get("/api/v1/ledger/transactions").with(operator())
+                        .param("from", "2026-10-01T00:00:00").param("to", "2026-10-09T00:00:00"))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/v1/ledger/transactions").with(operator())
+                        .param("from", "2026-10-08T00:00:00").param("to", "2026-10-09T00:00:00").param("size", "5000"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

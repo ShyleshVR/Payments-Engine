@@ -1,0 +1,20 @@
+# Where alerts go. Default: alert-sink, an in-cluster receiver that logs every notification
+# (kubectl -n payflow logs deploy/alert-sink). The local-slack overlay adds a Slack route.
+route:
+  receiver: alert-sink
+  group_by: [alertname, job, application]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+
+# While a whole service is down, its own warnings (lag, backlog, one pod down) are noise.
+inhibit_rules:
+  - source_matchers: [alertname = ServiceDown]
+    target_matchers: [severity = warning]
+    equal: [job]
+
+receivers:
+  - name: alert-sink
+    webhook_configs:
+      - url: http://alert-sink:9095/alerts
+        send_resolved: true

@@ -139,6 +139,30 @@ class PaymentControllerSecurityTest {
     }
 
     @Test
+    void lookupIsForAuditorsAndOperatorsOnly() throws Exception {
+        String body = "{\"paymentIds\":[\"pay_" + paymentId + "\"]}";
+        when(paymentService.lookupPayments(List.of(paymentId))).thenReturn(List.of());
+
+        mockMvc.perform(post("/api/v1/payments/lookup").with(merchant("payments:read", "payments:write"))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/v1/payments/lookup").with(jwt().authorities(new SimpleGrantedAuthority("SCOPE_payments:audit")))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+        verify(paymentService).lookupPayments(List.of(paymentId));
+    }
+
+    @Test
+    void lookupRejectsMalformedIds() throws Exception {
+        mockMvc.perform(post("/api/v1/payments/lookup").with(jwt().authorities(new SimpleGrantedAuthority("SCOPE_payments:audit")))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"paymentIds\":[\"" + paymentId + "\"]}"))
+                .andExpect(status().isBadRequest());
+        mockMvc.perform(post("/api/v1/payments/lookup").with(jwt().authorities(new SimpleGrantedAuthority("SCOPE_payments:audit")))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"paymentIds\":[]}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void operatorCannotCaptureOrRefundForAMerchant() throws Exception {
         for (String action : new String[]{"capture", "cancel", "refund"}) {
             mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/" + action).with(operator()))

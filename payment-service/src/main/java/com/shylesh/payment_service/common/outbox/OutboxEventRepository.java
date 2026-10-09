@@ -41,4 +41,10 @@ public interface OutboxEventRepository
             @Param("status") OutboxEventStatus status,
             @Param("cutoff") LocalDateTime cutoff
     );
+
+    long countByStatus(OutboxEventStatus status);
+
+    /** Creation time of the oldest message still waiting to be published (null if none). */
+    @Query("SELECT MIN(e.createdAt) FROM OutboxEvent e WHERE e.status = :status")
+    LocalDateTime findOldestCreatedAt(@Param("status") OutboxEventStatus status);
 }

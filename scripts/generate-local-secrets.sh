@@ -1,6 +1,7 @@
 #!/bin/bash
 # Creates the local overlay's secrets (random DB passwords, admin client secret, Grafana password,
-# processor API key, JWT signing key) in k8s/overlays/local/secrets/, which is git-ignored.
+# processor API key, service client secrets, JWT signing key) in k8s/overlays/local/secrets/,
+# which is git-ignored. An optional secrets/slack-webhook-url (written by you) enables Slack alerts.
 # Never changes an existing value: Postgres users are created with these passwords and tokens are
 # signed with the key, so regenerating would break a running cluster. Keys added in later
 # versions are appended to existing files.
@@ -20,13 +21,14 @@ ensure() {
 }
 
 ensure secrets/db.env postgres-password
-for svc in payment ledger notification webhook merchant processor; do
+for svc in payment ledger notification webhook merchant processor recon; do
   ensure secrets/db.env "$svc-password"
 done
 
 ensure secrets/auth.env admin-client-secret
 ensure secrets/auth.env grafana-admin-password
 ensure secrets/auth.env processor-api-key
+ensure secrets/auth.env reconciliation-client-secret
 
 if [ ! -f secrets/signing-key.pem ]; then
   # PKCS#8 PEM, as merchant-service's PemFileJwkSource expects.

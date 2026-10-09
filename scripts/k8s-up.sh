@@ -6,6 +6,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 NAMESPACE=payflow
+# Slack alerts only when you have put a Slack incoming-webhook URL in this file.
+OVERLAY=k8s/overlays/local
+if [ -f k8s/overlays/local/secrets/slack-webhook-url ]; then
+  OVERLAY=k8s/overlays/local-slack
+fi
 METRICS_SERVER_VERSION=v0.7.2
 
 if ! kubectl cluster-info >/dev/null 2>&1; then
@@ -40,16 +45,16 @@ fi
 
 already_deployed=$(kubectl -n "$NAMESPACE" get deployments -o name 2>/dev/null | grep -c . || true)
 
-echo "==> applying k8s/overlays/local"
+echo "==> applying $OVERLAY"
 # Grafana's provisioning files are shared with docker-compose and live outside k8s/, which
 # kustomize only reads with this load restrictor.
-kubectl kustomize --load-restrictor LoadRestrictionsNone k8s/overlays/local | kubectl apply -f -
+kubectl kustomize --load-restrictor LoadRestrictionsNone "$OVERLAY" | kubectl apply -f -
 
 # Image tags stay ":local", so a rebuilt image is only picked up by new pods.
 if [ "$already_deployed" -gt 0 ] && [ "${SKIP_BUILD:-0}" != "1" ]; then
   echo "==> rolling restart to pick up the rebuilt images"
   kubectl -n "$NAMESPACE" rollout restart deployment \
-    api-gateway merchant-service payment-service ledger-service notification-service webhook-service processor-simulator
+    api-gateway merchant-service payment-service ledger-service notification-service webhook-service processor-simulator     reconciliation-service
 fi
 
 echo "==> waiting for rollouts"
@@ -59,7 +64,7 @@ kubectl -n "$NAMESPACE" rollout status statefulset/postgres --timeout=300s
 # (MSYS_NO_PATHCONV: stops Git Bash on Windows from rewriting the container path; no-op elsewhere)
 MSYS_NO_PATHCONV=1 kubectl -n "$NAMESPACE" exec postgres-0 -- bash /docker-entrypoint-initdb.d/postgres-init.sh
 kubectl -n "$NAMESPACE" rollout status statefulset/kafka --timeout=300s
-for d in redis jaeger prometheus grafana merchant-service processor-simulator payment-service ledger-service notification-service webhook-service api-gateway; do
+for d in redis jaeger prometheus grafana alertmanager alert-sink kafka-exporter merchant-service processor-simulator          payment-service ledger-service notification-service webhook-service reconciliation-service api-gateway; do
   kubectl -n "$NAMESPACE" rollout status "deployment/$d" --timeout=600s
 done
 
@@ -70,6 +75,7 @@ PayFlow is up.
   Grafana      http://localhost:3000        (user admin)
   Prometheus   http://localhost:9090
   Jaeger       http://localhost:16686
+  Alertmanager http://localhost:9093        (notifications: kubectl -n $NAMESPACE logs deploy/alert-sink)
 
 Generated credentials (admin client id: payflow-admin; Grafana user: admin):
   cat k8s/overlays/local/secrets/auth.env

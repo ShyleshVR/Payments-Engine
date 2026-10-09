@@ -30,6 +30,7 @@ jobs:
           - merchant-service
           - api-gateway
           - processor-simulator
+          - reconciliation-service
     steps:
       - uses: actions/checkout@v4
 
@@ -75,6 +76,14 @@ jobs:
         run: |
           bash scripts/generate-local-secrets.sh
           kubectl kustomize --load-restrictor LoadRestrictionsNone k8s/overlays/local > rendered.yaml
+
+      - name: Unit-test the alert rules
+        run: |
+          docker run --rm -v "$PWD/k8s/base/observability:/rules" -w /rules --entrypoint promtool             prom/prometheus:v2.55.1 test rules alerts.test.yml
+
+      - name: Check the Alertmanager configuration
+        run: |
+          docker run --rm -v "$PWD/k8s/base/observability:/cfg" --entrypoint amtool             prom/alertmanager:v0.27.0 check-config /cfg/alertmanager.yml
 
       - name: Validate manifests against the Kubernetes API schemas
         run: |

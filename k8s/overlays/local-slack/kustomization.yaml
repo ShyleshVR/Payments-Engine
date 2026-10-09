@@ -1,0 +1,31 @@
+# The local overlay plus Slack notifications. scripts/k8s-up.sh uses it only when
+# k8s/overlays/local/secrets/slack-webhook-url exists (a Slack incoming-webhook URL you create);
+# otherwise alerts stay inside the cluster (alert-sink, Alertmanager UI).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: payflow
+
+resources:
+  - ../local
+
+configMapGenerator:
+  - name: alertmanager-config
+    behavior: replace
+    files:
+      - alertmanager.yml
+
+secretGenerator:
+  - name: alertmanager-slack
+    files:
+      - slack-webhook-url=../local/secrets/slack-webhook-url
+
+patches:
+  - target: { kind: Deployment, name: alertmanager }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value: { name: slack, secret: { secretName: alertmanager-slack, defaultMode: 0440 } }
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: { name: slack, mountPath: /etc/alertmanager/secrets, readOnly: true }
