@@ -202,21 +202,33 @@ public class SagaOrchestrator {
                          String authorizationId) {
     }
 
-    /** Runs a due saga's step (called by SagaWorker). */
-    public void runDueStep(UUID sagaId) {
-        Optional<ProcessorCall> call = transactionTemplate.execute(status -> claim(sagaId));
-        if (call == null || call.isEmpty()) {
-            return;
+    /** Processor steps one worker runs back to back for a saga (authorize, then capture). */
+    static final int MAX_STEPS_IN_A_ROW = 4;
+
+    /**
+     * Runs the step of a saga SagaWorker reserved until reservedUntil. When that step's outcome
+     * is another processor call to make right away (authorized: now capture), the same thread
+     * reserves the saga for itself and goes on, instead of leaving it for the next poll.
+     */
+    public void runReservedStep(UUID sagaId, LocalDateTime reservedUntil) {
+        LocalDateTime reservation = reservedUntil;
+        for (int step = 0; reservation != null && step < MAX_STEPS_IN_A_ROW; step++) {
+            LocalDateTime current = reservation;
+            Optional<ProcessorCall> call = transactionTemplate.execute(status -> claim(sagaId, current));
+            if (call == null || call.isEmpty()) {
+                return;
+            }
+            ProcessorCall claimed = call.get();
+            ProcessorResponse response = traceContext.continueTrace(claimed.traceParent(),
+                    "saga " + claimed.state().name().toLowerCase(), () -> callProcessor(claimed));
+            reservation = transactionTemplate.execute(status -> record(claimed, response));
         }
-        ProcessorCall claimed = call.get();
-        ProcessorResponse response = traceContext.continueTrace(claimed.traceParent(),
-                "saga " + claimed.state().name().toLowerCase(), () -> callProcessor(claimed));
-        transactionTemplate.executeWithoutResult(status -> record(claimed, response));
     }
 
-    private Optional<ProcessorCall> claim(UUID sagaId) {
+    private Optional<ProcessorCall> claim(UUID sagaId, LocalDateTime reservedUntil) {
         LocalDateTime now = LocalDateTime.now();
-        Optional<PaymentSaga> locked = sagaRepository.lockIfDue(sagaId, now);
+        // still our reservation? A ledger reply or merchant action may have moved the saga on since
+        Optional<PaymentSaga> locked = sagaRepository.lockReserved(sagaId, reservedUntil);
         if (locked.isEmpty()) {
             return Optional.empty();
         }
@@ -256,18 +268,31 @@ public class SagaOrchestrator {
         };
     }
 
-    private void record(ProcessorCall call, ProcessorResponse response) {
+    /**
+     * Applies a processor answer. Returns a reservation for this worker if the next step is a
+     * processor call due right away (the caller runs it), or null.
+     */
+    private LocalDateTime record(ProcessorCall call, ProcessorResponse response) {
         PaymentSaga saga = sagaRepository.findByIdForUpdate(call.sagaId()).orElse(null);
         if (saga == null || !saga.isActive() || saga.getState() != call.state() || saga.getAttempt() != call.attempt()) {
             // our lease ran out and another worker took the step: its answer counts, not ours
             log.warn("Discarding stale processor answer. sagaId={}, state={}, attempt={}, answer={}",
                     call.sagaId(), call.state(), call.attempt(), response.describe());
-            return;
+            return null;
         }
         Payment payment = paymentRepository.findById(saga.getPaymentId()).orElseThrow();
         LocalDateTime now = LocalDateTime.now();
         apply(saga, payment, stateMachine.decide(saga, payment.getCaptureMethod(),
                 new SagaInput.ProcessorAnswer(response), now), response.id(), now);
+        boolean nextStepDueNow = saga.isActive() && saga.getState().kind() == StepKind.PROCESSOR_CALL
+                && saga.getNextAttemptAt() != null && !saga.getNextAttemptAt().isAfter(now);
+        if (!nextStepDueNow) {
+            return null;
+        }
+        // still under this row lock: reserve it for ourselves, as SagaReservations would
+        LocalDateTime reservedUntil = now.plus(properties.lease()).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        saga.scheduleAt(reservedUntil, now);
+        return reservedUntil;
     }
 
     // ---------------------------------------------------------------- applying decisions

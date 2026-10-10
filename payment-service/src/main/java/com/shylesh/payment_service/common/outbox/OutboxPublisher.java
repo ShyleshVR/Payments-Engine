@@ -17,14 +17,17 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.Optional;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Relays outbox rows to Kafka. Each event is claimed, sent and marked in its own short
- * transaction (row lock held for at most one send, bounded by sendTimeout), so:
+ * Relays outbox rows to Kafka in batches: a transaction claims up to batchSize publishable rows,
+ * sends them all (the producer pipelines them), waits for the acks (bounded by sendTimeout) and
+ * marks each row by its own outcome. While batches come back full it goes on at once. So:
  * - several instances can run concurrently (claims use FOR UPDATE SKIP LOCKED);
- * - a payment's events are published in commit order (see claimNextPublishable);
+ * - a payment's events are published in commit order (see claimPublishable);
  * - a failed send is retried with exponential backoff and its attempts are recorded;
  * - an event that can never be published is parked as FAILED instead of retried forever.
  * Delivery is at-least-once: a send that times out may still have reached the broker, and
@@ -35,7 +38,9 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 public class OutboxPublisher {
 
-    enum Outcome { NOTHING_DUE, PUBLISHED, FAILED }
+    /** What one batch came to. */
+    record Batch(int claimed, int published, int failed) {
+    }
 
     private final OutboxEventRepository outboxEventRepository;
     private final PaymentEventPublisher paymentEventPublisher;
@@ -48,15 +53,17 @@ public class OutboxPublisher {
     public void publishPendingEvents() {
         int published = 0;
 
-        for (int i = 0; i < properties.publisher().batchSize(); i++) {
-            Outcome outcome = transactionTemplate.execute(status -> publishNext());
-
-            // On a failure, stop: the broker is likely unhealthy, and the failed event's backoff
-            // paces the next attempt instead of blocking this poll on every remaining event.
-            if (outcome != Outcome.PUBLISHED) {
+        while (true) {
+            Batch batch = transactionTemplate.execute(status -> publishBatch());
+            if (batch == null) {
                 break;
             }
-            published++;
+            published += batch.published();
+            // On a failure, stop: the broker is likely unhealthy, and the failed events' backoff
+            // paces the next attempt. A short batch means everything due has been sent.
+            if (batch.failed() > 0 || batch.claimed() < properties.publisher().batchSize()) {
+                break;
+            }
         }
 
         if (published > 0) {
@@ -64,28 +71,49 @@ public class OutboxPublisher {
         }
     }
 
-    Outcome publishNext() {
-        Optional<OutboxEvent> claimed = outboxEventRepository.claimNextPublishable(LocalDateTime.now());
+    Batch publishBatch() {
+        List<OutboxEvent> claimed = outboxEventRepository.claimPublishable(LocalDateTime.now(),
+                properties.publisher().batchSize());
         if (claimed.isEmpty()) {
-            return Outcome.NOTHING_DUE;
+            return new Batch(0, 0, 0);
         }
 
-        OutboxEvent event = claimed.get();
-
-        try {
-            // sent inside the trace of the transaction that wrote the row, so consumers' spans join it
-            traceContext.continueTrace(event.getTraceParent(), "outbox publish " + event.getEventType(),
-                            () -> paymentEventPublisher.publish(event))
-                    .get(properties.publisher().sendTimeout().toMillis(), TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            recordFailure(event, e);
-            return Outcome.FAILED;
-        } catch (Exception e) {
-            recordFailure(event, e);
-            return Outcome.FAILED;
+        // Send everything first, then wait: the producer batches and pipelines the records.
+        List<CompletableFuture<?>> sends = new ArrayList<>(claimed.size());
+        for (OutboxEvent event : claimed) {
+            try {
+                // sent inside the trace of the transaction that wrote the row, so consumers' spans join it
+                sends.add(traceContext.continueTrace(event.getTraceParent(), "outbox publish " + event.getEventType(),
+                        () -> paymentEventPublisher.publish(event)));
+            } catch (RuntimeException e) {
+                sends.add(CompletableFuture.failedFuture(e));
+            }
         }
 
+        long deadline = System.nanoTime() + properties.publisher().sendTimeout().toNanos();
+        int published = 0;
+        int failed = 0;
+        for (int i = 0; i < claimed.size(); i++) {
+            OutboxEvent event = claimed.get(i);
+            try {
+                sends.get(i).get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                recordFailure(event, e);
+                failed++;
+                continue;
+            } catch (Exception e) {
+                recordFailure(event, e);
+                failed++;
+                continue;
+            }
+            markPublished(event);
+            published++;
+        }
+        return new Batch(claimed.size(), published, failed);
+    }
+
+    private void markPublished(OutboxEvent event) {
         LocalDateTime publishedAt = LocalDateTime.now();
         event.markPublished(publishedAt);
 
@@ -100,8 +128,6 @@ public class OutboxPublisher {
                 )
                 .register(meterRegistry)
                 .record(Duration.between(event.getCreatedAt(), publishedAt));
-
-        return Outcome.PUBLISHED;
     }
 
     private void recordFailure(OutboxEvent event, Exception e) {

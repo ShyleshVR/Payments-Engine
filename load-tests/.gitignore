@@ -1,0 +1,3 @@
+# raw k6 logs; the JSON results are kept
+results/*.log
+__pycache__/

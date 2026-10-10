@@ -20,7 +20,7 @@ http://localhost ──(Service type LoadBalancer :80)──▶ api-gateway ×2 
 
 namespace payflow:
   postgres   StatefulSet, 1 instance, 8 databases (one per service, each with its own user)
-  kafka      StatefulSet, 1 KRaft broker, topics with 3 partitions (events + saga commands/replies)
+  kafka      StatefulSet, 1 KRaft broker, topics with 12 partitions (events + saga commands/replies)
   redis      rate-limit buckets, idempotency cache
   prometheus (Kubernetes pod discovery, alert rules) · alertmanager ─▶ alert-sink (or Slack)
   kafka-exporter (consumer lag) · grafana (provisioned dashboard) · jaeger (OTLP traces)
@@ -109,7 +109,7 @@ and the same credentials.
 | reconciliation-service | Deployment | 2 | 8087 | Daily reconciliation; one replica runs it at a time (ShedLock) |
 | payout-service | Deployment | 2 | 8088 | Payout batch (ShedLock) and payout sagas on every replica; demo timings in the local overlay (see PAYOUTS.md) |
 | postgres | StatefulSet + 2Gi PVC | 1 | 5432 | `max_connections=300` for all replicas' pools |
-| kafka | StatefulSet + 2Gi PVC | 1 | 9092 | KRaft (no ZooKeeper), `apache/kafka:4.0.0` |
+| kafka | StatefulSet + 2Gi PVC | 1 | 9092 | KRaft (no ZooKeeper), `apache/kafka:4.2.0` |
 | redis | Deployment | 1 | 6379 | No persistence; keys have TTLs |
 | prometheus / grafana / jaeger | Deployment | 1 | 9090 / 3000 / 16686 | LoadBalancer in the local overlay |
 | alertmanager | Deployment | 1 | 9093 | Routes alerts; LoadBalancer in the local overlay |
@@ -219,27 +219,31 @@ have fewer.
 
 | Topic | Declared by | Partitions | Key |
 |---|---|---|---|
-| `payment-created` | payment-service | 3 | payment id (per-payment order within a partition) |
-| `payment-created.DLT` | payment-service | 3 | — |
-| `webhook-deliveries.DLT` | webhook-service | 3 | merchant id |
-| `notification-events.DLT` | notification-service | 3 | payment id |
-| `ledger-commands` (+ `.DLT`) | payment-service | 3 | payment id (saga commands to the ledger) |
-| `ledger-replies` (+ `.DLT`) | ledger-service | 3 | payment id (replies to the orchestrator) |
+| `payment-created` | payment-service | 12 | payment id (per-payment order within a partition) |
+| `payment-created.DLT` | payment-service | 12 | — |
+| `webhook-deliveries.DLT` | webhook-service | 12 | merchant id |
+| `notification-events.DLT` | notification-service | 12 | payment id |
+| `ledger-commands` (+ `.DLT`) | payment-service | 12 | payment id (saga commands to the ledger) |
+| `ledger-replies` (+ `.DLT`) | ledger-service | 12 | payment id (replies to the orchestrator) |
 
 A dead-letter topic needs **at least as many partitions as its source**, because the
 dead-letter recoverer writes each record to the same partition number it came from.
 
-With 3 partitions, the 2 replicas of ledger-service, notification-service and webhook-service
-each own 1–2 partitions of `payment-created`. A third replica would own one partition each; a
-fourth would sit idle as a hot standby. Partition count (`PAYFLOW_KAFKA_PARTITIONS`) caps consumer
-parallelism.
+Each pod runs 3 listener threads (`payflow.kafka.listener-concurrency`), each owning some
+partitions. So the 2 replicas of notification-service and webhook-service run 6 consumers with
+2 partitions each, and payment-service at its autoscaling maximum of 4 pods runs 12.
+ledger-service runs 6 per pod (12 consumers, one partition each): its consumers mostly wait on
+database commits, and more of them in flight let Postgres flush more commits per write. Partition count (`PAYFLOW_KAFKA_PARTITIONS`) caps consumer parallelism. It was 3 until the
+load test showed the ledger's 2 consumers capping throughput at about 200 commands/s
+([LOAD_TEST.md](LOAD_TEST.md#5-two-consumer-threads-for-the-whole-ledger)).
 
-The broker's `num.partitions` is also 3, so a topic that does get auto-created (for example by a
+The broker's `num.partitions` is also 12, so a topic that does get auto-created (for example by a
 producer racing a service's startup) still gets enough partitions.
 
 > Increasing the partition count of an existing topic changes which partition a key maps to.
 > For a short time, a payment's old and new events can then sit in different partitions. The
 > consumers are idempotent and don't rely on cross-event order, so this is acceptable here.
+> The change from 3 to 12 was applied with the system idle, so nothing was in flight.
 
 The outbox relay (payment-service), webhook dispatcher and dead-letter relays already claimed
 their work with `FOR UPDATE SKIP LOCKED`, leases and optimistic versions, which is what makes
@@ -606,4 +610,6 @@ get 503.
 | `.github/workflows/ci.yml` | Test matrix, image build, alert-rule tests, Alertmanager config check, manifest validation |
 | `.gitattributes` | LF line endings for scripts mounted into Linux containers |
 | `*/config/KafkaTopicsConfig.java` | Explicit topics with partition counts |
+| `*/config/KafkaConsumerConfig.java` | Error handling and dead-lettering; listener threads per pod |
+| `load-tests/`, `k8s/load/k6-job.yaml`, `scripts/load-test.sh`, `scripts/load-ceiling.sh` | Load test: k6 scenarios, the in-cluster Job, result collection and the ceiling search ([LOAD_TEST.md](LOAD_TEST.md)) |
 | `merchant-service/.../auth/PemFileJwkSource`, `SigningKeyConfig` | Signing key from a mounted PEM |

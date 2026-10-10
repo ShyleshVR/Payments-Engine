@@ -150,7 +150,7 @@ services:
     restart: unless-stopped
 
   kafka:
-    image: apache/kafka:4.0.0
+    image: apache/kafka:4.2.0
     container_name: payflow-kafka
 
     ports:

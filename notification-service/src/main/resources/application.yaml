@@ -44,8 +44,11 @@ spring:
 payflow:
   kafka:
     # Topics this service owns are created with these settings (see KafkaTopicsConfig).
-    partitions: 3
+    partitions: 12
     replication-factor: 1
+    # Consumer threads per pod (see KafkaConsumerConfig). Partitions bound the parallelism of a
+    # consumer group: 12 leave room for 4 pods x 3 threads.
+    listener-concurrency: 3
 
 management:
   endpoint:

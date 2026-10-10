@@ -33,14 +33,16 @@ linked documents; the identifier scheme also has its own record, [ADR-001](adr/A
   *effects* do, if every step is idempotent.
 - **Cost:** a dedupe record per message, and care in every new consumer.
 
-### 4. Explicit topics, 3 partitions, keyed by payment id
+### 4. Explicit topics, 12 partitions, keyed by payment id
 - **Decision:** topics are declared by their owning service with explicit partition counts.
   Messages are keyed by payment id, and dead-letter topics have as many partitions as their
   source.
 - **Why:** with auto-created single-partition topics, only one consumer replica could work. Keys
   keep each payment's messages in order, and the outbox relays also hold a payment's later
   messages back until its earlier ones are published.
-- **Cost:** partition count caps consumer parallelism (3 here); changing it remaps keys.
+- **Cost:** partition count caps consumer parallelism; changing it remaps keys. It was 3 until
+  the load test showed the ledger's consumers capping throughput, and is now 12, with 3 listener
+  threads per pod ([LOAD_TEST.md](LOAD_TEST.md)).
 
 ## Payments and money
 
@@ -229,3 +231,21 @@ linked documents; the identifier scheme also has its own record, [ADR-001](adr/A
   - Paying the whole balance with negative balances allowed and the bank debited for later
     refunds: more realistic at scale, but it needs debit rails and collections.
   [PAYOUTS.md](PAYOUTS.md)
+
+## Performance
+
+### 22. Load tested against SLOs: a ceiling, not a peak
+- **Decision:**
+  - SLOs on create latency, read latency, payment-to-success time, errors and backlog.
+  - A k6 Job in the cluster; a ceiling search (the highest rate at which every SLO holds for
+    3 minutes).
+  - Bottlenecks fixed one at a time, each from evidence, each with a test.
+- **Why:** a peak throughput number says nothing about whether payments still complete in
+  time. A ceiling under SLOs does, and the first SLO to break points at the bottleneck. Running
+  the generator in the cluster, limited to 1 CPU, avoids measuring the host's port forwarding.
+- **Cost:**
+  - The numbers are for one laptop, with the generator on the same node.
+  - The 50 test merchants and their payments stay in the databases.
+- **Alternatives:** Gatling (heavier, JVM); k6 from the host (measures the port-forward);
+  a fixed "N req/s" target (doesn't say what breaks).
+  [LOAD_TEST.md](LOAD_TEST.md)

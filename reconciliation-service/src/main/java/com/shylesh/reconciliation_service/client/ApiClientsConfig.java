@@ -16,6 +16,10 @@ import org.springframework.security.oauth2.client.web.client.OAuth2ClientHttpReq
 import org.springframework.web.client.RestClient;
 
 import java.net.http.HttpClient;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.time.Duration;
 
 /**
@@ -27,6 +31,18 @@ import java.time.Duration;
 public class ApiClientsConfig {
 
     static final String REGISTRATION_ID = "payflow";
+
+    /** Reused threads for the HTTP clients' work (idle ones are dropped after a minute). */
+    private static final ExecutorService HTTP_EXECUTOR = Executors.newCachedThreadPool(new ThreadFactory() {
+        private final AtomicInteger counter = new AtomicInteger();
+
+        @Override
+        public Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable, "recon-http-" + counter.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        }
+    });
 
     @Bean
     public OAuth2AuthorizedClientManager authorizedClientManager(ClientRegistrationRepository registrations,
@@ -74,8 +90,11 @@ public class ApiClientsConfig {
     }
 
     private static JdkClientHttpRequestFactory requestFactory() {
-        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(
-                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build());
+        // an executor of its own: otherwise Spring writes each request body on a new thread
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(2))
+                .executor(HTTP_EXECUTOR)
+                .build());
         factory.setReadTimeout(Duration.ofSeconds(30));
         return factory;
     }

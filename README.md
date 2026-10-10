@@ -64,7 +64,8 @@ caused it. A full walkthrough is in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.m
 | **Kubernetes** | Kustomize, 2 replicas per service, autoscaling, PodDisruptionBudgets, readiness/liveness/startup probes, graceful shutdown, zero-downtime rolling updates, non-root read-only containers, priority classes |
 | **Daily reconciliation** | A scheduled job compares the processor's settlement report (card payments and payout transfers), the ledger and payment-service's and payout-service's statuses through their APIs, reports 19 kinds of discrepancy, and alerts until each day is clean. One run per day across replicas (ShedLock). [RECONCILIATION.md](docs/RECONCILIATION.md) |
 | **Observability and alerting** | Prometheus (pod discovery), a provisioned Grafana dashboard, one Jaeger trace per payment across all services, and alert rules (unit-tested with promtool) routed by Alertmanager: stuck sagas, outbox backlog, consumer lag, open circuit breaker, services down |
-| **Verification** | 433 automated tests (Testcontainers with Postgres, Kafka and Redis), CI on every push, and fault injection on a live cluster: processor outage, ledger down, Kafka down, pods killed mid-saga; every alert in those scenarios fired and resolved, and the daily reconciliation found injected corruption and nothing else |
+| **Load tested against SLOs** | k6 in the cluster searches for the highest rate at which every SLO holds (latency, payment-to-success time, errors, backlog). Nine bottlenecks were found from metrics, query plans and a JFR profile and fixed one at a time: 100 → 200 payments/s, and payment-to-success p95 at idle 2.7 s → 0.53 s. [LOAD_TEST.md](docs/LOAD_TEST.md) |
+| **Verification** | 441 automated tests (Testcontainers with Postgres, Kafka and Redis), CI on every push, and fault injection on a live cluster: processor outage, ledger down, Kafka down, pods killed mid-saga; every alert in those scenarios fired and resolved, and the daily reconciliation found injected corruption and nothing else |
 
 ## Services
 
@@ -138,14 +139,17 @@ Test cards such as `pm_card_declined`, `pm_card_capture_fails`, `pm_card_refund_
 | [PAYOUTS.md](docs/PAYOUTS.md) | Merchant payouts: funds availability, the payout saga, the bank, batch and instant payouts, runbook |
 | [RECONCILIATION.md](docs/RECONCILIATION.md) | Daily reconciliation: what is compared, discrepancy types, scheduling, runbook |
 | [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Kubernetes, gateway, alerting and runbooks, CI, cluster verification |
+| [LOAD_TEST.md](docs/LOAD_TEST.md) | SLOs, the load-test harness, the ceiling, and each bottleneck found and fixed |
 | [INTERVIEW_NOTES.md](docs/INTERVIEW_NOTES.md) | Talking points and trade-offs, question by question |
 
 ## Status and limits
 
 All planned phases are built and verified: webhooks, merchant identity and auth, Kubernetes with
-an API gateway, sagas, alerting with daily reconciliation, and merchant payouts. Known limits,
-stated plainly:
+an API gateway, sagas, alerting with daily reconciliation, merchant payouts, and a load test
+against SLOs. Known limits, stated plainly:
 - single-node local deployment: one Kafka broker and one Postgres instance;
+- throughput was measured on one laptop: 200 payments/s, limited by the shared Postgres
+  instance's write-ahead log;
 - the email channel is a stub;
 - the bank and the card processor are simulators (test tokens, no real money or card data);
 - no fees, FX or negative balances: payouts only pay what is there.

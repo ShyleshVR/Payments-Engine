@@ -33,7 +33,9 @@ spec:
         fsGroup: 1000
       containers:
         - name: kafka
-          image: apache/kafka:4.0.0
+          # 4.2.0 or later: older 4.x group coordinators fail a whole batch of offset commits
+          # when the clock steps back (it does in Docker Desktop's VM), stalling every consumer.
+          image: apache/kafka:4.2.0
           ports:
             - name: broker
               containerPort: 9092
@@ -63,7 +65,7 @@ spec:
             # Topics are created explicitly by the services; if one is ever auto-created
             # (e.g. a producer racing a service's startup) it still gets enough partitions.
             - name: KAFKA_NUM_PARTITIONS
-              value: "3"
+              value: "12"
             - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
               value: "1"
             - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR

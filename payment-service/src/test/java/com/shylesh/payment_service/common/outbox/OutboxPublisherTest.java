@@ -16,12 +16,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.*;
 
 class OutboxPublisherTest {
@@ -67,10 +68,7 @@ class OutboxPublisherTest {
     void publishesEachClaimedEventAndMarksItPublished() {
         OutboxEvent first = pendingEvent();
         OutboxEvent second = pendingEvent();
-        when(repository.claimNextPublishable(any()))
-                .thenReturn(Optional.of(first))
-                .thenReturn(Optional.of(second))
-                .thenReturn(Optional.empty());
+        when(repository.claimPublishable(any(), anyInt())).thenReturn(List.of(first, second)).thenReturn(List.of());
         when(eventPublisher.publish(any())).thenReturn(CompletableFuture.completedFuture(null));
 
         publisher.publishPendingEvents();
@@ -82,9 +80,46 @@ class OutboxPublisherTest {
     }
 
     @Test
+    void everyEventOfABatchIsSentBeforeAnyAckIsAwaited() {
+        OutboxEvent first = pendingEvent();
+        OutboxEvent second = pendingEvent();
+        CompletableFuture<org.springframework.kafka.support.SendResult<String, Object>> firstAck = new CompletableFuture<>();
+        when(repository.claimPublishable(any(), anyInt())).thenReturn(List.of(first, second)).thenReturn(List.of());
+        when(eventPublisher.publish(first)).thenReturn(firstAck);
+        // the second send completes the first ack: had the publisher waited for the first ack
+        // before sending the second, it would time out instead
+        when(eventPublisher.publish(second)).thenAnswer(invocation -> {
+            firstAck.complete(null);
+            return CompletableFuture.completedFuture(null);
+        });
+
+        publisher.publishPendingEvents();
+
+        assertThat(first.getStatus()).isEqualTo(OutboxEventStatus.PUBLISHED);
+        assertThat(second.getStatus()).isEqualTo(OutboxEventStatus.PUBLISHED);
+    }
+
+    @Test
+    void aFailedSendInABatchIsRetriedLaterAndTheOthersArePublished() {
+        OutboxEvent ok = pendingEvent();
+        OutboxEvent broken = pendingEvent();
+        when(repository.claimPublishable(any(), anyInt())).thenReturn(List.of(ok, broken));
+        when(eventPublisher.publish(ok)).thenReturn(CompletableFuture.completedFuture(null));
+        when(eventPublisher.publish(broken))
+                .thenReturn(CompletableFuture.failedFuture(new org.apache.kafka.common.errors.TimeoutException("broker down")));
+
+        publisher.publishPendingEvents();
+
+        assertThat(ok.getStatus()).isEqualTo(OutboxEventStatus.PUBLISHED);
+        assertThat(broken.getStatus()).isEqualTo(OutboxEventStatus.PENDING);
+        assertThat(broken.getNextAttemptAt()).isNotNull();
+        verify(repository, times(1)).claimPublishable(any(), anyInt());
+    }
+
+    @Test
     void transientFailureSchedulesBackoffRecordsErrorAndStopsTheBatch() {
         OutboxEvent event = pendingEvent();
-        when(repository.claimNextPublishable(any())).thenReturn(Optional.of(event));
+        when(repository.claimPublishable(any(), anyInt())).thenReturn(List.of(event));
         when(eventPublisher.publish(any()))
                 .thenReturn(CompletableFuture.failedFuture(new org.apache.kafka.common.errors.TimeoutException("broker down")));
 
@@ -95,13 +130,13 @@ class OutboxPublisherTest {
         assertThat(event.getAttemptCount()).isEqualTo(1);
         assertThat(event.getNextAttemptAt()).isAfter(before);
         assertThat(event.getLastError()).contains("broker down");
-        verify(repository, times(1)).claimNextPublishable(any());
+        verify(repository, times(1)).claimPublishable(any(), anyInt());
     }
 
     @Test
     void eventThatCanNeverBeSerializedIsParkedAsFailed() {
         OutboxEvent event = pendingEvent();
-        when(repository.claimNextPublishable(any())).thenReturn(Optional.of(event));
+        when(repository.claimPublishable(any(), anyInt())).thenReturn(List.of(event));
         when(eventPublisher.publish(any()))
                 .thenThrow(new EventSerializationException("bad payload", new RuntimeException("unparseable")));
 

@@ -34,7 +34,7 @@ Then name the three hardest problems and how each is solved:
 | | |
 |---|---|
 | Services / databases / Kafka topics | 9 / 8 / 6 main topics plus dead-letter topics |
-| Automated tests | 433, run in CI on every push; 29 for the payment saga state machine and 21 for the payout one, 15 Testcontainers saga scenarios, 31 reconciliation rules; plus promtool tests for every alert rule |
+| Automated tests | 441, run in CI on every push; 29 for the payment saga state machine and 21 for the payout one, 15 Testcontainers saga scenarios, 31 reconciliation rules; plus promtool tests for every alert rule |
 | Rolling restart under ~12 req/s | 429 requests, 0 failed |
 | Pods force-killed under traffic | ~1,085 requests, 0 failed (after adding gateway retries for idempotent requests) |
 | Processor outage of 45s, 20 payments in flight | Circuit opened; all 20 succeeded afterwards |
@@ -47,6 +47,8 @@ Then name the three hardest problems and how each is solved:
 | Alert rules | 16, each unit-tested with promtool; 11 also fired for real on the cluster |
 | Payouts on the cluster | Every bank outcome (paid, failed, invalid, returned, stuck) ended right; a bank outage plus a pod kill gave exactly 1 transfer; 7 payouts reconciled with 0 discrepancies, an injected amount change caught |
 | Autoscaling under ~90 req/s | payment-service and gateway 2 → 4 pods, 9,341 responses, 0 errors |
+| Load-test ceiling (every SLO held for 3 minutes) | 100 → 200 payments/s (~420 req/s through the gateway), 0 errors; limited now by Postgres' write-ahead log |
+| Payment → SUCCESS p95 at idle | 2.7 s → 0.53 s (shorter polls, the next processor step run in the same thread) |
 
 ## Likely questions
 
@@ -159,7 +161,20 @@ than the saga's check interval instead of flagging it.
 **How do multiple replicas avoid doing the same work?** Every worker claims rows with
 `FOR UPDATE SKIP LOCKED`, takes a lease, and records its result only if the claim is still
 valid. Adding replicas adds throughput with no coordinator. Kafka consumers scale up to the
-partition count (3); a fourth replica would be idle.
+partition count (12, with 3 listener threads per pod).
+
+But sharing a queue is not enough: the load test found that every replica asked for "the 100
+oldest due sagas", got the same 100 ids, and fought over them, so adding pods added nothing.
+Now each replica reserves a disjoint batch in one statement
+(`UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING id`).
+
+**How did you find the bottlenecks?** SLOs first, then a ceiling search: step runs at rising
+rates until one SLO breaks. At the first failure, ask which SLO broke and which resource was
+saturated: CPU, a pool, consumer lag, outbox age. When the metrics didn't explain it (high CPU,
+no hot code), a JFR recording from a pod did: 38% of CPU in threads created per HTTP call.
+When things got slower as the tables grew, `EXPLAIN (ANALYZE, BUFFERS)` on the live database
+and `pg_stat_user_tables` did. Then fix one thing, add a test, and measure again. Nine rounds took the ceiling from 100 to
+200 payments/s. [LOAD_TEST.md](LOAD_TEST.md)
 
 **What would you change at 100x?**
 - Change data capture instead of polling outboxes.
@@ -257,6 +272,40 @@ the scheduler. An hourly catch-up re-runs any recent day that has no completed r
 - **The last 0.3% of failures.** Killing a pod dropped 1 of 362 requests: a GET in flight on the
   dying pod. Adding gateway retries for idempotent requests on transport errors only (never
   POSTs, never a service's own 500) brought it to 0 over ~1,085 requests.
+
+- **A fix that made things worse first.** Under load, sagas were slow, so the first fix made
+  the saga workers fast. That flooded the outbox relays, which sent one message per broker
+  round trip: replies arrived after the 15 s reply timeout, the orchestrator re-sent commands,
+  and the backlog grew. Deduplication kept it correct. Batching the relays fixed it. Lesson: a
+  bottleneck protects what's behind it, so re-measure the whole path after each fix.
+- **A thread per HTTP call.** payment-service burned CPU with no hot code. JFR showed 38% of
+  CPU in `SimpleAsyncTaskExecutor` threads, over 4,200 created in two minutes. Spring's JDK
+  request factory writes each request body on a new thread when the `HttpClient` has no
+  executor. One line fixed it, and a test now counts the threads started per call.
+- **A broker bug that looked like ours.** Mid-run, every consumer group stopped and the
+  orchestrator started re-sending commands. The broker log showed Kafka 4.0's new group
+  coordinator failing offset commits whenever Docker Desktop's clock stepped back (a negative
+  queue time). Comparing bytecode showed that 4.0.1 to 4.1.1 still had it and 4.2.0 clamps it.
+  The system recovered by itself once the broker was upgraded: 0 stuck sagas.
+- **A tail hidden behind a passing p95.** A 30-minute soak passed every SLO, but saga p99 was
+  exactly 30 s, the reservation lease. The step history showed 2.7% of sagas waiting 30 s
+  before their first step. The worker's claim used `SKIP LOCKED`, so when another replica's
+  reservation query briefly held the row lock, the claim gave up, and the saga sat reserved
+  until the lease expired. The claim now waits for the lock (the reservation token still
+  decides), and a test holds the lock while claiming. Lesson: look at p99 and at outliers'
+  timelines, not only at the SLO.
+- **A query plan that got worse as data grew.** After a million payments, the outbox relay
+  slowed down. `EXPLAIN` showed Postgres running the ordering guard (`NOT EXISTS` an earlier
+  unpublished event) as an anti-join that scanned a whole index per candidate: 46,640 pages
+  to claim 84 rows. The same rule as a correlated `min(seq)` read 1,436. A test pins the
+  rule's behaviour, so the rewrite couldn't change what's claimable.
+- **Queue tables need their own vacuum settings.** The next soak passed latency but the
+  outbox age crept from 1 s to 7 s: 818,000 dead rows and an 11 MB index with nothing pending
+  in it. Default autovacuum waits for 20% of a table to be dead. Queue-like tables now vacuum
+  every 50,000 dead rows.
+- **Measuring the warm-up instead of the system.** A run at 150/s failed badly right after a
+  deploy and passed minutes later. Freshly started JVMs were still JIT-compiling, and pods the
+  autoscaler added mid-run were cold. The ceiling search now warms up before it judges.
 
 ## What is deliberately not solved
 

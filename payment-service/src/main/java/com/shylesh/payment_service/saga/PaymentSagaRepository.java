@@ -2,7 +2,6 @@ package com.shylesh.payment_service.saga;
 
 import jakarta.persistence.LockModeType;
 
-import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -15,26 +14,21 @@ import java.util.UUID;
 
 public interface PaymentSagaRepository extends JpaRepository<PaymentSaga, UUID> {
 
-    /** Candidates for the worker; each is then claimed individually with lockIfDue. */
-    @Query("""
-            SELECT s.id FROM PaymentSaga s
-            WHERE s.finishedAt IS NULL AND s.nextAttemptAt <= :now
-            ORDER BY s.nextAttemptAt
-            """)
-    List<UUID> findDueIds(@Param("now") LocalDateTime now, Limit limit);
-
     /**
-     * Locks the saga if it is still due. SKIP LOCKED: a saga another worker (or a reply, or the
-     * merchant) is changing right now is skipped, not waited for.
+     * Locks the saga if SagaWorker's reservation (next_attempt_at = reservedUntil) is still in
+     * place. It waits for a lock someone else holds (another replica's reservation query, a reply
+     * being applied) rather than skipping the row: skipping would leave a valid reservation unrun
+     * until its lease expired. If they changed the saga, the reservation is gone and nothing is
+     * returned. Only one row is locked, and the reservation query never waits, so no deadlock.
      */
     @Query(value = """
             SELECT * FROM payment_saga
             WHERE id = :id
               AND finished_at IS NULL
-              AND next_attempt_at <= :now
-            FOR UPDATE SKIP LOCKED
+              AND next_attempt_at = :reservedUntil
+            FOR UPDATE
             """, nativeQuery = true)
-    Optional<PaymentSaga> lockIfDue(@Param("id") UUID id, @Param("now") LocalDateTime now);
+    Optional<PaymentSaga> lockReserved(@Param("id") UUID id, @Param("reservedUntil") LocalDateTime reservedUntil);
 
     /** Waits for the lock: replies and merchant actions must not be skipped. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)

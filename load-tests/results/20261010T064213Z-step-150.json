@@ -1,0 +1,176 @@
+{
+  "start": 1791614535,
+  "end": 1791614726,
+  "passed": true,
+  "failed": [],
+  "k6": {
+    "scenario": "step",
+    "rate": 150,
+    "peak": null,
+    "duration": "3m",
+    "merchants": 50,
+    "passed": true,
+    "thresholds": {
+      "http_req_duration{name:balance} p(99)<200": true,
+      "http_req_duration{name:create_payment} p(95)<150": true,
+      "http_req_duration{name:create_payment} p(99)<300": true,
+      "http_req_failed{phase:load} rate<0.001": true,
+      "checks rate>0.999": true,
+      "e2e_payment_ms p(95)<3000": true,
+      "dropped_iterations count<1": true,
+      "http_req_duration{name:get_payment} p(99)<200": true
+    },
+    "iterations": 27001,
+    "iterationRate": 144.8012466105085,
+    "droppedIterations": 0,
+    "httpRequests": 57967,
+    "httpRate": 310.8660368975722,
+    "failedRate": 0,
+    "create": {
+      "avg": 26.054063842783698,
+      "med": 16.326474,
+      "p(90)": 46.385867,
+      "p(95)": 70.75852,
+      "p(99)": 157.242791,
+      "max": 1282.775942
+    },
+    "read": {
+      "avg": 9.271442125921203,
+      "med": 4.715601,
+      "p(90)": 15.17351,
+      "p(95)": 25.497569,
+      "p(99)": 75.648618,
+      "max": 631.449402
+    },
+    "balance": {
+      "p(95)": 36.84673249999997,
+      "p(99)": 94.5267110399994,
+      "max": 336.545412,
+      "avg": 12.68607338789493,
+      "med": 7.668535,
+      "p(90)": 22.640722600000004
+    },
+    "e2e": {
+      "avg": 610.0778443113772,
+      "med": 531,
+      "p(90)": 678,
+      "p(95)": 1117,
+      "p(99)": 1713,
+      "max": 1883
+    },
+    "e2eTimeouts": 14,
+    "checks": 1
+  },
+  "server": {
+    "sagaP95Seconds": 0.9020869210899053,
+    "sagaP99Seconds": 30.0,
+    "paymentsCompleted": 28579.00206155917,
+    "outboxOldestAgeMaxSeconds": {
+      "payout-service": 0.0,
+      "ledger-service": 0.0,
+      "payment-service": 0.0
+    },
+    "outboxPendingMax": {
+      "payout-service": 0.0,
+      "ledger-service": 28.0,
+      "payment-service": 122.0
+    },
+    "consumerLagMax": {
+      "ledger-service": 89.0,
+      "notification-service": 68.0,
+      "payment-service": 24.0,
+      "payout-service": 0.0,
+      "webhook-service": 117.0
+    },
+    "cpuAvgByApp": {
+      "reconciliation-service": 0.0,
+      "merchant-service": 0.001,
+      "api-gateway": 0.021,
+      "processor-simulator": 0.017,
+      "notification-service": 0.012,
+      "payout-service": 0.001,
+      "webhook-service": 0.013,
+      "ledger-service": 0.019,
+      "payment-service": 0.04
+    },
+    "cpuCoresAvgByApp": {
+      "api-gateway": 0.932,
+      "merchant-service": 0.035,
+      "processor-simulator": 0.383,
+      "reconciliation-service": 0.01,
+      "payout-service": 0.021,
+      "webhook-service": 0.292,
+      "payment-service": 1.774,
+      "ledger-service": 0.427,
+      "notification-service": 0.257
+    },
+    "cpuCoresMaxByApp": {
+      "processor-simulator": 0.499,
+      "webhook-service": 0.374,
+      "notification-service": 0.329,
+      "payout-service": 0.04,
+      "payment-service": 2.421,
+      "reconciliation-service": 0.024,
+      "ledger-service": 0.557,
+      "api-gateway": 2.058,
+      "merchant-service": 0.287
+    },
+    "nodeCpuBusy": 0.6713165143858042,
+    "cpuMaxByApp": {
+      "reconciliation-service": 0.002,
+      "merchant-service": 0.023,
+      "api-gateway": 0.074,
+      "processor-simulator": 0.024,
+      "notification-service": 0.014,
+      "payout-service": 0.003,
+      "webhook-service": 0.016,
+      "ledger-service": 0.024,
+      "payment-service": 0.086
+    },
+    "hikariPendingMax": {
+      "reconciliation-service": 0.0,
+      "merchant-service": 0.0,
+      "processor-simulator": 0.0,
+      "notification-service": 0.0,
+      "payout-service": 0.0,
+      "webhook-service": 0.0,
+      "ledger-service": 0.0,
+      "payment-service": 0.0
+    },
+    "hikariActiveMax": {
+      "reconciliation-service": 0.0,
+      "merchant-service": 0.0,
+      "processor-simulator": 6.0,
+      "notification-service": 3.0,
+      "payout-service": 1.0,
+      "webhook-service": 3.0,
+      "ledger-service": 4.0,
+      "payment-service": 9.0
+    },
+    "heapUsedMaxMb": {
+      "reconciliation-service": 58,
+      "merchant-service": 72,
+      "api-gateway": 89,
+      "processor-simulator": 106,
+      "notification-service": 117,
+      "payout-service": 78,
+      "webhook-service": 110,
+      "ledger-service": 137,
+      "payment-service": 174
+    },
+    "replicas": {
+      "ledger-service": 2.0,
+      "payment-service": 4.0,
+      "processor-simulator": 2.0,
+      "reconciliation-service": 2.0,
+      "webhook-service": 2.0,
+      "api-gateway": 4.0,
+      "notification-service": 2.0,
+      "merchant-service": 2.0,
+      "payout-service": 2.0,
+      "kafka-exporter": 1.0
+    },
+    "rateLimited": null,
+    "drainSeconds": 5
+  }
+}
