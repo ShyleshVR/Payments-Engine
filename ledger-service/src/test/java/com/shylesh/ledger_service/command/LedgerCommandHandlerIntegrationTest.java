@@ -22,6 +22,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -249,9 +250,9 @@ class LedgerCommandHandlerIntegrationTest {
                 .findSummariesBetween(from, to, org.springframework.data.domain.PageRequest.of(0, 1000)).getContent();
         List<com.shylesh.ledger_service.dto.LedgerTransactionSummary> open = transactionRepository.findOpenRefundHoldsCreatedBefore(to);
 
-        assertThat(period).filteredOn(t -> t.paymentId().equals(donePayment))
+        assertThat(period).filteredOn(t -> donePayment.equals(t.paymentId()))
                 .extracting(t -> t.type().name()).containsExactly("REFUND_HOLD", "REFUND");
-        assertThat(period).filteredOn(t -> t.paymentId().equals(donePayment))
+        assertThat(period).filteredOn(t -> donePayment.equals(t.paymentId()))
                 .allSatisfy(t -> assertThat(t.amount()).isEqualByComparingTo("30.00"));
         assertThat(open).extracting(com.shylesh.ledger_service.dto.LedgerTransactionSummary::paymentId)
                 .contains(openPayment).doesNotContain(donePayment);
@@ -275,5 +276,151 @@ class LedgerCommandHandlerIntegrationTest {
             }
         }
         assertThat(debits).isEqualByComparingTo(credits);
+    }
+
+    // ---------------------------------------------------------------- payouts
+
+    private static LedgerCommand payout(LedgerCommandType type, UUID sagaId, UUID payoutId, UUID merchantId, String amount,
+                                        LocalDateTime cutoff) {
+        return LedgerCommand.payout(UUID.randomUUID(), type, sagaId, payoutId, merchantId, new BigDecimal(amount), "USD", cutoff);
+    }
+
+    /** Everything settled so far is payable. */
+    private static LocalDateTime later() {
+        return LocalDateTime.now().plusMinutes(1);
+    }
+
+    private BigDecimal payoutClearing() {
+        return queryService.getBalance(LedgerAccountType.PAYOUT_CLEARING, null, "USD").getBalance();
+    }
+
+    @Test
+    void aPayoutOnlyTakesMoneySettledBeforeTheCutoff() {
+        UUID merchantId = merchantWithBalance("60.00");
+        LocalDateTime cutoff = LocalDateTime.now().plusNanos(1_000);
+        handler.handle(command(LedgerCommandType.SETTLE_PAYMENT, UUID.randomUUID(), UUID.randomUUID(), merchantId, "40.00"));
+
+        LedgerReply tooMuch = handler.handle(payout(LedgerCommandType.HOLD_PAYOUT, UUID.randomUUID(), UUID.randomUUID(), merchantId, "60.01", cutoff));
+        LedgerReply payable = handler.handle(payout(LedgerCommandType.HOLD_PAYOUT, UUID.randomUUID(), UUID.randomUUID(), merchantId, "60.00", cutoff));
+
+        assertThat(queryService.getPayable(merchantId, "USD", cutoff)).isEqualByComparingTo("0");
+        assertThat(tooMuch.reason()).isEqualTo(LedgerCommandHandler.INSUFFICIENT_FUNDS);
+        assertThat(payable.outcome()).isEqualTo(LedgerReply.SUCCEEDED);
+        // the newer 40.00 stays in the balance, for refunds
+        assertThat(balance(merchantId).getBalance()).isEqualByComparingTo("40.00");
+        assertThat(balance(merchantId).getPayoutReserved()).isEqualByComparingTo("60.00");
+    }
+
+    @Test
+    void aPaidPayoutLeavesThroughClearingAndAReturnBringsItBackOnce() throws Exception {
+        UUID merchantId = merchantWithBalance("100.00");
+        UUID sagaId = UUID.randomUUID();
+        UUID payoutId = UUID.randomUUID();
+        BigDecimal clearingBefore = payoutClearing();
+
+        handler.handle(payout(LedgerCommandType.HOLD_PAYOUT, sagaId, payoutId, merchantId, "100.00", later()));
+        LedgerReply paid = handler.handle(payout(LedgerCommandType.FINALIZE_PAYOUT, sagaId, payoutId, merchantId, "100.00", null));
+        assertThat(paid.outcome()).isEqualTo(LedgerReply.SUCCEEDED);
+        assertThat(balance(merchantId).getBalance()).isEqualByComparingTo("0");
+        assertThat(balance(merchantId).getPayoutReserved()).isEqualByComparingTo("0");
+        assertThat(payoutClearing()).isEqualByComparingTo(clearingBefore.add(new BigDecimal("100.00")));
+
+        LedgerReply returned = handler.handle(payout(LedgerCommandType.RETURN_PAYOUT, sagaId, payoutId, merchantId, "100.00", null));
+        LedgerReply returnedAgain = handler.handle(payout(LedgerCommandType.RETURN_PAYOUT, sagaId, payoutId, merchantId, "100.00", null));
+
+        assertThat(returned.outcome()).isEqualTo(LedgerReply.SUCCEEDED);
+        assertThat(returnedAgain.reason()).isEqualTo(LedgerCommandHandler.ALREADY_RETURNED);
+        assertThat(balance(merchantId).getBalance()).isEqualByComparingTo("100.00");
+        assertThat(payoutClearing()).isEqualByComparingTo(clearingBefore);
+        assertThat(transactionRepository.findByPayoutIdOrderByCreatedAtAsc(payoutId))
+                .extracting(t -> t.getType().name()).containsExactly("PAYOUT_HOLD", "PAYOUT", "PAYOUT_RETURN");
+
+        // replies go to payout-service's topic, keyed by the payout
+        List<OutboxEvent> replies = outboxEventRepository.findAll().stream()
+                .filter(e -> e.getAggregateId().equals(payoutId)).toList();
+        assertThat(replies).hasSize(4).allSatisfy(e -> assertThat(e.getTopic()).isEqualTo(LedgerTopics.PAYOUT_REPLIES));
+        JsonNode data = objectMapper.readTree(replies.getFirst().getPayload()).get("data");
+        assertThat(data.get("payoutId").asText()).isEqualTo(payoutId.toString());
+        assertThat(data.get("paymentId").isNull()).isTrue();
+    }
+
+    @Test
+    void aReleasedPayoutReturnsTheAmountAndCanNeitherBePaidNorReturned() {
+        UUID merchantId = merchantWithBalance("70.00");
+        UUID sagaId = UUID.randomUUID();
+        UUID payoutId = UUID.randomUUID();
+        handler.handle(payout(LedgerCommandType.HOLD_PAYOUT, sagaId, payoutId, merchantId, "70.00", later()));
+
+        LedgerReply released = handler.handle(payout(LedgerCommandType.RELEASE_PAYOUT, sagaId, payoutId, merchantId, "70.00", null));
+        LedgerReply paidAfter = handler.handle(payout(LedgerCommandType.FINALIZE_PAYOUT, sagaId, payoutId, merchantId, "70.00", null));
+        LedgerReply returnedAfter = handler.handle(payout(LedgerCommandType.RETURN_PAYOUT, sagaId, payoutId, merchantId, "70.00", null));
+
+        assertThat(released.outcome()).isEqualTo(LedgerReply.SUCCEEDED);
+        assertThat(paidAfter.reason()).isEqualTo(LedgerCommandHandler.NO_ACTIVE_HOLD);
+        assertThat(returnedAfter.reason()).isEqualTo(LedgerCommandHandler.NOT_PAID_OUT);
+        assertThat(balance(merchantId).getBalance()).isEqualByComparingTo("70.00");
+        assertThat(balance(merchantId).getPayoutReserved()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void aPayoutIsHeldOnceWhateverTheCommandId() {
+        UUID merchantId = merchantWithBalance("50.00");
+        UUID sagaId = UUID.randomUUID();
+        UUID payoutId = UUID.randomUUID();
+
+        LedgerReply first = handler.handle(payout(LedgerCommandType.HOLD_PAYOUT, sagaId, payoutId, merchantId, "20.00", later()));
+        LedgerReply second = handler.handle(payout(LedgerCommandType.HOLD_PAYOUT, sagaId, payoutId, merchantId, "20.00", later()));
+
+        assertThat(second.transactionId()).isEqualTo(first.transactionId());
+        assertThat(balance(merchantId).getBalance()).isEqualByComparingTo("30.00");
+    }
+
+    @Test
+    void aRefundAndAPayoutCannotSpendTheSameBalance() throws Exception {
+        UUID merchantId = merchantWithBalance("100.00");
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        try {
+            List<Callable<LedgerReply>> holds = new ArrayList<>();
+            for (int i = 0; i < 4; i++) {
+                holds.add(() -> handler.handle(command(LedgerCommandType.HOLD_REFUND, UUID.randomUUID(), UUID.randomUUID(), merchantId, "60.00")));
+                holds.add(() -> handler.handle(payout(LedgerCommandType.HOLD_PAYOUT, UUID.randomUUID(), UUID.randomUUID(), merchantId, "60.00", later())));
+            }
+            int succeeded = 0;
+            for (Future<LedgerReply> future : pool.invokeAll(holds)) {
+                if (future.get().outcome().equals(LedgerReply.SUCCEEDED)) {
+                    succeeded++;
+                }
+            }
+
+            assertThat(succeeded).isEqualTo(1);
+            assertThat(balance(merchantId).getBalance()).isEqualByComparingTo("40.00");
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void payableBalancesListMerchantsWithEnoughOldMoney() {
+        UUID enough = merchantWithBalance("30.00");
+        UUID tooLittle = merchantWithBalance("0.50");
+        UUID held = merchantWithBalance("10.00");
+        handler.handle(payout(LedgerCommandType.HOLD_PAYOUT, UUID.randomUUID(), UUID.randomUUID(), held, "10.00", later()));
+        LocalDateTime cutoff = later();
+        UUID tooRecent = UUID.randomUUID();
+
+        List<UUID> payable = queryService.getPayableBalances(cutoff, new BigDecimal("1.00")).stream()
+                .map(LedgerEntryRepository.PayableBalance::getMerchantId).toList();
+        handler.handle(command(LedgerCommandType.SETTLE_PAYMENT, UUID.randomUUID(), UUID.randomUUID(), tooRecent, "99.00"));
+        List<UUID> beforeTheNewSettlement = queryService.getPayableBalances(LocalDateTime.now().minusSeconds(30), new BigDecimal("1.00"))
+                .stream().map(LedgerEntryRepository.PayableBalance::getMerchantId).toList();
+
+        assertThat(payable).contains(enough).doesNotContain(tooLittle, held);
+        assertThat(beforeTheNewSettlement).doesNotContain(tooRecent);
+        assertThat(queryService.getPayableBalances(cutoff, new BigDecimal("1.00")))
+                .filteredOn(b -> b.getMerchantId().equals(enough))
+                .singleElement().satisfies(b -> {
+                    assertThat(b.getPayable()).isEqualByComparingTo("30.00");
+                    assertThat(b.getCurrency()).isEqualTo("USD");
+                });
     }
 }

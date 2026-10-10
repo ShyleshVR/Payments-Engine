@@ -23,7 +23,8 @@ public class AppConfig {
 
     @Bean
     public Reconciler reconciler(ReconciliationProperties properties) {
-        return new Reconciler(new Reconciler.Settings(properties.authorizationGrace(), properties.refundHoldStaleAfter()));
+        return new Reconciler(new Reconciler.Settings(properties.authorizationGrace(), properties.refundHoldStaleAfter(),
+                properties.payoutReturnGrace()));
     }
 
     /** Lock rows in Postgres; the database clock decides expiry, so replicas' clocks don't matter. */

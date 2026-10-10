@@ -19,6 +19,7 @@ import java.util.UUID;
 public class WebhookDeliveryController {
 
     private static final String PUBLIC_PAYMENT_ID_PREFIX = "pay_";
+    private static final String PUBLIC_PAYOUT_ID_PREFIX = "po_";
 
     private final WebhookDeliveryQueryService deliveryQueryService;
 
@@ -29,17 +30,22 @@ public class WebhookDeliveryController {
     @GetMapping("/payment/{paymentId}")
     @PreAuthorize("hasAuthority(T(com.shylesh.webhook_service.security.Scopes).WEBHOOKS_MANAGE)")
     public List<WebhookDeliveryResponse> byPayment(@CurrentMerchant UUID merchantId, @PathVariable String paymentId) {
-        return deliveryQueryService.findByPayment(merchantId, parsePaymentId(paymentId));
+        return deliveryQueryService.findByPayment(merchantId, parseId(paymentId, PUBLIC_PAYMENT_ID_PREFIX));
     }
 
-    private static UUID parsePaymentId(String paymentId) {
-        String raw = paymentId.startsWith(PUBLIC_PAYMENT_ID_PREFIX)
-                ? paymentId.substring(PUBLIC_PAYMENT_ID_PREFIX.length())
-                : paymentId;
+    /** The calling merchant's deliveries for a payout ("po_<uuid>" or the raw UUID). */
+    @GetMapping("/payout/{payoutId}")
+    @PreAuthorize("hasAuthority(T(com.shylesh.webhook_service.security.Scopes).WEBHOOKS_MANAGE)")
+    public List<WebhookDeliveryResponse> byPayout(@CurrentMerchant UUID merchantId, @PathVariable String payoutId) {
+        return deliveryQueryService.findByPayout(merchantId, parseId(payoutId, PUBLIC_PAYOUT_ID_PREFIX));
+    }
+
+    private static UUID parseId(String id, String prefix) {
+        String raw = id.startsWith(prefix) ? id.substring(prefix.length()) : id;
         try {
             return UUID.fromString(raw);
         } catch (IllegalArgumentException e) {
-            throw new InvalidPaymentIdException(paymentId);
+            throw new InvalidPaymentIdException(id);
         }
     }
 }

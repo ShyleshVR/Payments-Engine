@@ -6,7 +6,7 @@ linked documents; the identifier scheme also has its own record, [ADR-001](adr/A
 ## Architecture
 
 ### 1. Microservices with a database per service
-- **Decision:** eight services, each with its own database and credentials; nothing reads
+- **Decision:** nine services, each with its own database and credentials; nothing reads
   another service's tables.
 - **Why:** services evolve and scale independently, and a ledger bug can't corrupt payment data.
   It also forces the hard problem (consistency across services) into the open, where it is
@@ -199,3 +199,33 @@ linked documents; the identifier scheme also has its own record, [ADR-001](adr/A
 - **Alternatives:** Grafana-managed alerts (tied to the dashboard tool, harder to test in CI); a
   hosted monitoring service (nothing to run, but the setup would leave the repository).
   [DEPLOYMENT.md](DEPLOYMENT.md#alerting)
+
+## Payouts
+
+### 21. Payouts as their own service and saga, with the ledger deciding what is payable
+- **Decision:** payout-service runs a daily batch and merchant-requested instant payouts, each
+  as a saga: hold in the ledger, transfer at the bank, finalize, or release if the bank refuses;
+  then watch the paid transfer for a return window and book a return back. The ledger only
+  holds the **payable** balance: settlements older than the payout delay (T+2 by default), so
+  recent money stays available for refunds. It checks this under the same row lock as refund
+  holds.
+- **Why:**
+  - **Its own service:** payouts have their own concepts (destinations, schedules, bank rails)
+    and lifecycle (days, not seconds). payment-service's saga tables are tied to payments.
+  - **The ledger decides:** keeping the payable rule in the ledger, under its lock, means a
+    refund and a payout can never spend the same money.
+  - **The pivot is the transfer:** an unknown transfer outcome is parked rather than released,
+    the same rule as an unknown capture.
+  - **Returns are booked:** bank rails really do send "completed" money back days later.
+- **Cost:**
+  - The saga machinery is copied rather than shared.
+  - Payout sagas stay open for the return window.
+  - Merchants wait for the delay.
+  - Payable balances are summed from entries, fine at this scale; at volume they'd need
+    balance snapshots.
+- **Alternatives:**
+  - Payouts inside the ledger: the ledger would orchestrate and call a bank.
+  - A third saga type in payment-service: it would need its saga tables generalized.
+  - Paying the whole balance with negative balances allowed and the bank debited for later
+    refunds: more realistic at scale, but it needs debit rails and collections.
+  [PAYOUTS.md](PAYOUTS.md)

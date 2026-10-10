@@ -37,6 +37,7 @@ public class WebhookDeadLetterPublisher {
                 delivery.getEventId(),
                 delivery.getId(),
                 delivery.getPaymentId(),
+                delivery.getPayoutId(),
                 delivery.getMerchantId(),
                 delivery.getEventType(),
                 delivery.getUrl(),

@@ -1,0 +1,107 @@
+spring:
+  lifecycle:
+    # On SIGTERM (pod shutdown / rolling update) finish in-flight requests before exiting.
+    timeout-per-shutdown-phase: 20s
+  application:
+    name: payout-service
+  datasource:
+    url: jdbc:postgresql://localhost:55438/payout_db
+    username: payout_user
+    password: payout_password
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+    consumer:
+      group-id: payout-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    template:
+      observation-enabled: true
+    listener:
+      observation-enabled: true
+  security:
+    oauth2:
+      # Its own API: merchant and operator tokens from merchant-service.
+      resourceserver:
+        jwt:
+          jwk-set-uri: http://localhost:8084/oauth2/jwks
+          issuer-uri: http://localhost:8084
+          audiences: payflow-api
+      # Calling the ledger API (payable balances): tokens for its own client.
+      client:
+        registration:
+          payflow:
+            provider: payflow
+            client-id: payout-service
+            client-secret: ${PAYFLOW_PAYOUT_CLIENT_SECRET:local-dev-payout-secret}
+            authorization-grant-type: client_credentials
+            scope: ledger:admin
+        provider:
+          payflow:
+            token-uri: http://localhost:8084/oauth2/token
+
+payflow:
+  kafka:
+    # Partitions of the topics this service creates (payout-events, its DLT, ledger-commands).
+    partitions: 3
+    replication-factor: 1
+  payouts:
+    # Funds availability: money settled less than this long ago is not paid out yet.
+    delay: P2D
+    # The batch skips payable balances below this.
+    minimum-amount: 1.00
+    batch:
+      # Daily at 04:00 UTC; a missed day is caught up hourly after that time.
+      cron: "0 0 4 * * *"
+      time: "04:00"
+      catch-up-interval: PT1H
+    saga:
+      submit-timeout: 10m
+      in-transit-timeout: 3d
+      transit-poll-interval: 1h
+      return-window: 5d
+      # under the reconciliation's grace for unbooked returns (2h)
+      return-check-interval: 1h
+    bank:
+      base-url: http://localhost:8086
+      api-key: ${PAYFLOW_PROCESSOR_API_KEY:local-dev-processor-key}
+    ledger:
+      base-url: http://localhost:8082
+
+# Ledger commands and payout events go through a transactional outbox (see OutboxRelay).
+outbox:
+  publisher:
+    poll-interval: PT0.5S
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: http://localhost:4318/v1/traces
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+server:
+  shutdown: graceful
+  port: 8088

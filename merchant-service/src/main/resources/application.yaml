@@ -34,7 +34,11 @@ payflow:
       - client-id: reconciliation-service
         # Local development default only; set PAYFLOW_RECONCILIATION_CLIENT_SECRET anywhere else.
         client-secret: ${PAYFLOW_RECONCILIATION_CLIENT_SECRET:local-dev-reconciliation-secret}
-        scopes: [ledger:admin, payments:audit]
+        scopes: [ledger:admin, payments:audit, payouts:audit]
+      - client-id: payout-service
+        # Reads payable balances from the ledger. Local development default only.
+        client-secret: ${PAYFLOW_PAYOUT_CLIENT_SECRET:local-dev-payout-secret}
+        scopes: [ledger:admin]
 
 management:
   endpoint:

@@ -36,13 +36,19 @@ public class LedgerCommandParser {
         }
         if (command.getCommandId() == null) problems.add("commandId missing");
         if (command.getSagaId() == null) problems.add("sagaId missing");
-        if (command.getPaymentId() == null) problems.add("paymentId missing");
         if (command.getMerchantId() == null) problems.add("merchantId missing");
         if (command.getCurrency() == null || !command.getCurrency().matches("[A-Z]{3}")) problems.add("currency invalid");
         if (command.getAmount() == null || command.getAmount().compareTo(BigDecimal.ZERO) <= 0) problems.add("amount must be positive");
         if (command.getCommandType() == null || Arrays.stream(LedgerCommandType.values())
                 .noneMatch(type -> type.name().equals(command.getCommandType()))) {
             problems.add("unknown commandType " + command.getCommandType());
+        } else if (command.type().isPayout()) {
+            if (command.getPayoutId() == null) problems.add("payoutId missing");
+            if (command.getPaymentId() != null) problems.add("a payout command can't carry a paymentId");
+            if (command.type() == LedgerCommandType.HOLD_PAYOUT && command.getCutoff() == null) problems.add("cutoff missing");
+        } else {
+            if (command.getPaymentId() == null) problems.add("paymentId missing");
+            if (command.getPayoutId() != null) problems.add("a payment command can't carry a payoutId");
         }
 
         if (!problems.isEmpty()) {

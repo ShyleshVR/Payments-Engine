@@ -19,4 +19,7 @@ public class AccountBalanceResponse {
 
     /** Merchant only: refunds held while the processor refund is pending (null for other owners). */
     private BigDecimal reserved;
+
+    /** Merchant only: payouts held while the bank transfer is in progress (null for other owners). */
+    private BigDecimal payoutReserved;
 }

@@ -10,13 +10,15 @@ import java.time.Duration;
  * @param timeoutOnceDelay pm_card_timeout_once: delay of the first authorization answer
  * @param flakyFailures    pm_card_flaky: calls per Idempotency-Key answered 503 before one succeeds
  * @param chaos            failures injected into any request, for load and resilience tests
+ * @param bank             timing of bank transfers (payouts)
  */
 @ConfigurationProperties(prefix = "processor")
 public record ProcessorProperties(
         String apiKey,
         @DefaultValue("8s") Duration timeoutOnceDelay,
         @DefaultValue("2") int flakyFailures,
-        @DefaultValue Chaos chaos
+        @DefaultValue Chaos chaos,
+        @DefaultValue Bank bank
 ) {
 
     public ProcessorProperties {
@@ -32,6 +34,20 @@ public record ProcessorProperties(
     public record Chaos(
             @DefaultValue("0.0") double errorRate,
             @DefaultValue("0ms") Duration latency
+    ) {
+    }
+
+    /**
+     * @param settleDelay     how long a transfer stays PENDING before it is paid (or fails)
+     * @param slowSettleDelay the same for ba_test_slow
+     * @param returnDelay     how long after being paid a returning transfer comes back
+     * @param clockInterval   how often the bank moves due transfers on
+     */
+    public record Bank(
+            @DefaultValue("20s") Duration settleDelay,
+            @DefaultValue("10m") Duration slowSettleDelay,
+            @DefaultValue("60s") Duration returnDelay,
+            @DefaultValue("2s") Duration clockInterval
     ) {
     }
 }

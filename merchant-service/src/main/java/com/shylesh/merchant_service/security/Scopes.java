@@ -10,6 +10,10 @@ public final class Scopes {
     public static final String PAYMENTS_READ = "payments:read";
     public static final String LEDGER_READ = "ledger:read";
     public static final String WEBHOOKS_MANAGE = "webhooks:manage";
+    /** The merchant's own payouts. */
+    public static final String PAYOUTS_READ = "payouts:read";
+    /** Payout bank account and instant payouts. */
+    public static final String PAYOUTS_WRITE = "payouts:write";
 
     // operator scopes
     public static final String PAYMENTS_OPERATE = "payments:operate";
@@ -19,12 +23,19 @@ public final class Scopes {
     public static final String PAYMENTS_AUDIT = "payments:audit";
     /** Reconciliation runs and reports. */
     public static final String RECONCILIATION_ADMIN = "reconciliation:admin";
+    /** Payout batches, any payout, parked payout sagas. */
+    public static final String PAYOUTS_OPERATE = "payouts:operate";
+    /** Read-only: any payout (reconciliation). */
+    public static final String PAYOUTS_AUDIT = "payouts:audit";
 
-    public static final Set<String> MERCHANT = Set.of(PAYMENTS_WRITE, PAYMENTS_READ, LEDGER_READ, WEBHOOKS_MANAGE);
-    public static final Set<String> ADMIN = Set.of(MERCHANTS_ADMIN, PAYMENTS_OPERATE, LEDGER_ADMIN, RECONCILIATION_ADMIN);
+    public static final Set<String> MERCHANT = Set.of(PAYMENTS_WRITE, PAYMENTS_READ, LEDGER_READ, WEBHOOKS_MANAGE,
+            PAYOUTS_READ, PAYOUTS_WRITE);
+    public static final Set<String> ADMIN = Set.of(MERCHANTS_ADMIN, PAYMENTS_OPERATE, LEDGER_ADMIN, RECONCILIATION_ADMIN,
+            PAYOUTS_OPERATE);
 
     /** What a configured service client may be granted: operator-level scopes, never merchant ones. */
-    public static final Set<String> SERVICE_ASSIGNABLE = Set.of(PAYMENTS_OPERATE, PAYMENTS_AUDIT, LEDGER_ADMIN, RECONCILIATION_ADMIN);
+    public static final Set<String> SERVICE_ASSIGNABLE = Set.of(PAYMENTS_OPERATE, PAYMENTS_AUDIT, LEDGER_ADMIN, RECONCILIATION_ADMIN,
+            PAYOUTS_OPERATE, PAYOUTS_AUDIT);
 
     /** JWT claim carrying the merchant a token acts for. Absent on operator tokens. */
     public static final String MERCHANT_ID_CLAIM = "merchant_id";

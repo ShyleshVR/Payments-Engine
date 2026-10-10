@@ -31,6 +31,9 @@ public class ReconciliationDiscrepancy {
     @Column(name = "payment_id", updatable = false)
     private UUID paymentId;
 
+    @Column(name = "payout_id", updatable = false)
+    private UUID payoutId;
+
     @Column(name = "processor_amount", updatable = false, precision = 19, scale = 4)
     private BigDecimal processorAmount;
 

@@ -96,11 +96,12 @@ groups:
       # series then, which only absent() on a plain selector can see (and it keeps the job label).
       - alert: ServiceDown
         expr: >-
-          max by (job) (up{job=~"api-gateway|merchant-service|payment-service|ledger-service|webhook-service|notification-service|processor-simulator|reconciliation-service"}) == 0
+          max by (job) (up{job=~"api-gateway|merchant-service|payment-service|ledger-service|webhook-service|notification-service|processor-simulator|reconciliation-service|payout-service"}) == 0
           or absent(up{job="api-gateway"}) or absent(up{job="merchant-service"})
           or absent(up{job="payment-service"}) or absent(up{job="ledger-service"})
           or absent(up{job="webhook-service"}) or absent(up{job="notification-service"})
           or absent(up{job="processor-simulator"}) or absent(up{job="reconciliation-service"})
+          or absent(up{job="payout-service"})
         for: 2m
         labels:
           severity: critical
@@ -156,3 +157,24 @@ groups:
         annotations:
           summary: "A reconciliation run failed"
           runbook: docs/RECONCILIATION.md#runbook
+
+  - name: payflow-payouts
+    rules:
+      # Merchants weren't paid today. Silent until the first batch ever completes (0 = never).
+      - alert: PayoutBatchNotRun
+        expr: time() - max(payout_batch_last_success_timestamp_seconds > 0) > 26 * 3600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No payout batch completed for over 26 hours"
+          runbook: docs/PAYOUTS.md#runbook
+
+      # Banks refusing or sending back payouts: wrong account details, or a bank-side problem.
+      - alert: PayoutsFailing
+        expr: sum(increase(payouts_status_transitions_total{status=~"FAILED|RETURNED"}[1h])) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} payouts failed or were returned in the last hour"
+          runbook: docs/PAYOUTS.md#runbook

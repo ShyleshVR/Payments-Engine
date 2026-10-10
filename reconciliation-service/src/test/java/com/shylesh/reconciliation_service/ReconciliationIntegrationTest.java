@@ -90,6 +90,7 @@ class ReconciliationIntegrationTest {
         registry.add("payflow.reconciliation.processor.api-key", () -> "processor-key");
         registry.add("payflow.reconciliation.ledger.base-url", () -> stub.baseUrl());
         registry.add("payflow.reconciliation.payments.base-url", () -> stub.baseUrl());
+        registry.add("payflow.reconciliation.payouts.base-url", () -> stub.baseUrl());
         registry.add("spring.security.oauth2.client.provider.payflow.token-uri", () -> stub.baseUrl() + "/oauth2/token");
         registry.add("spring.security.oauth2.resourceserver.jwt.jwk-set-uri", () -> stub.baseUrl() + "/oauth2/jwks");
     }
@@ -219,6 +220,46 @@ class ReconciliationIntegrationTest {
     }
 
     @Test
+    void payoutsAreReconciledAgainstTheBankAndPayoutService() throws Exception {
+        String paid = id();
+        String returnedNotBooked = id();
+        stub.report = """
+                {"authorizations":[],"refunds":[],"transfers":[
+                  {"id":"tr_1","reference":"po_%s","status":"PAID","amount":120.00,"currency":"USD","failureCode":null,
+                   "createdAt":"2026-10-04T09:00:00","paidAt":"2026-10-04T09:00:20","failedAt":null,"returnedAt":null},
+                  {"id":"tr_2","reference":"po_%s","status":"RETURNED","amount":30.00,"currency":"USD","failureCode":"account_frozen",
+                   "createdAt":"2026-10-04T10:00:00","paidAt":"2026-10-04T10:00:20","failedAt":null,"returnedAt":"2026-10-04T15:00:00"}
+                ]}""".formatted(paid, returnedNotBooked);
+        stub.ledgerPages = List.of("{\"items\":["
+                + "{\"transactionId\":\"" + id() + "\",\"paymentId\":null,\"payoutId\":\"" + paid + "\",\"sagaId\":\"" + id()
+                + "\",\"type\":\"PAYOUT\",\"amount\":120.0000,\"currency\":\"USD\",\"createdAt\":\"2026-10-04T09:00:25\"},"
+                + "{\"transactionId\":\"" + id() + "\",\"paymentId\":null,\"payoutId\":\"" + returnedNotBooked + "\",\"sagaId\":\"" + id()
+                + "\",\"type\":\"PAYOUT\",\"amount\":30.0000,\"currency\":\"USD\",\"createdAt\":\"2026-10-04T10:00:25\"}"
+                + "],\"hasNext\":false}");
+        stub.payouts = """
+                [{"payoutId":"po_%s","status":"PAID","amount":120.00,"currency":"USD","inFlight":false},
+                 {"payoutId":"po_%s","status":"PAID","amount":30.00,"currency":"USD","inFlight":false}]
+                """.formatted(paid, returnedNotBooked);
+
+        MvcResult result = trigger("2026-10-04", "SCOPE_reconciliation:admin");
+
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.at("/run/payoutsChecked").asInt()).isEqualTo(2);
+        assertThat(body.at("/run/payoutsMatched").asInt()).isEqualTo(1);
+        assertThat(body.at("/run/paymentsChecked").asInt()).isZero();
+        Map<String, String> found = new java.util.HashMap<>();
+        body.get("discrepancies").forEach(d -> {
+            assertThat(d.get("paymentId").isNull()).isTrue();
+            found.put(d.get("type").asText(), d.get("payoutId").asText());
+        });
+        assertThat(found).containsExactlyInAnyOrderEntriesOf(Map.of(
+                "RETURN_NOT_BOOKED", "po_" + returnedNotBooked,
+                "PAYOUT_STATUS_MISMATCH", "po_" + returnedNotBooked));
+        assertThat(stub.requestsTo("/api/v1/payouts/lookup").getFirst().authorization()).isEqualTo("Bearer service-token");
+        assertThat(stub.requestsTo("/api/v1/ledger/payout-holds/open")).isNotEmpty();
+    }
+
+    @Test
     void aDayKeepsAlertingUntilItIsReRunCleanWhateverDaysRunAfterIt() {
         LocalDate badDay = LocalDate.of(2026, 10, 8);
         aDayWithProblems();
@@ -254,6 +295,13 @@ class ReconciliationIntegrationTest {
         assertThat(run.getStatus()).isEqualTo(RunStatus.COMPLETED);
         assertThat(run.getMatched()).isEqualTo(1);
         assertThat(run.getDiscrepancyCount()).isZero();
+    }
+
+    @Test
+    void runCountersExistFromStartupSoTheFirstFailureAlerts() {
+        // a counter series that first appears at 1 makes Prometheus' increase() miss that run
+        assertThat(meterRegistry.find("reconciliation.runs").tag("status", "FAILED").tag("trigger", "SCHEDULED").counter()).isNotNull();
+        assertThat(meterRegistry.find("reconciliation.runs").tag("status", "FAILED").tag("trigger", "MANUAL").counter()).isNotNull();
     }
 
     @Test

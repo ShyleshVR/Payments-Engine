@@ -14,6 +14,7 @@ public class LedgerTransactionResponse {
 
     private UUID transactionId;
     private UUID paymentId;
+    private UUID payoutId;
     private LedgerTransactionType type;
     private LocalDateTime createdAt;
     private List<LedgerEntryResponse> entries;

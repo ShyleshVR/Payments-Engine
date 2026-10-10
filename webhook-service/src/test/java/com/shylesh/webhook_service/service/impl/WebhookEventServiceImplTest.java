@@ -116,4 +116,39 @@ class WebhookEventServiceImplTest {
         verifyNoInteractions(deliveryRepository, subscriptionRepository);
         verify(processedEventRepository, never()).save(any());
     }
+
+    private com.shylesh.webhook_service.event.PayoutEvent payoutEvent(String type, String status, String failureCode) {
+        return new com.shylesh.webhook_service.event.PayoutEvent(UUID.randomUUID(), type, LocalDateTime.now(),
+                new com.shylesh.webhook_service.event.PayoutEventData(UUID.randomUUID(), merchantId, new BigDecimal("75.50"),
+                        "USD", status, "BATCH", failureCode));
+    }
+
+    @Test
+    void aPayoutEventIsQueuedWithItsOwnPayloadAndThePayoutId() {
+        var event = payoutEvent("PAYOUT_RETURNED", "RETURNED", "account_frozen");
+        when(subscriptionRepository.findByMerchantIdAndActiveTrue(merchantId)).thenReturn(Optional.of(subscription));
+
+        service.handle(event);
+
+        ArgumentCaptor<WebhookDelivery> captor = ArgumentCaptor.forClass(WebhookDelivery.class);
+        verify(deliveryRepository).save(captor.capture());
+        WebhookDelivery delivery = captor.getValue();
+        assertThat(delivery.getPayoutId()).isEqualTo(event.data().getPayoutId());
+        assertThat(delivery.getPaymentId()).isNull();
+        assertThat(delivery.getPayload())
+                .contains("\"payloadVersion\":\"1.0\"")
+                .contains("\"payoutId\":\"po_" + event.data().getPayoutId() + "\"")
+                .contains("\"amount\":75.50")
+                .contains("\"status\":\"RETURNED\"")
+                .contains("\"failureCode\":\"account_frozen\"")
+                .doesNotContain("paymentId");
+    }
+
+    @Test
+    void anUnknownPayoutEventTypeIsSkipped() {
+        service.handle(payoutEvent("PAYOUT_SCHEDULED", "PENDING", null));
+
+        verifyNoInteractions(deliveryRepository, subscriptionRepository);
+        verify(processedEventRepository).save(any());
+    }
 }

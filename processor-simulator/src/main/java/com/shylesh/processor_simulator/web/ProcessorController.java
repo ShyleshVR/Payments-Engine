@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shylesh.processor_simulator.config.ProcessorProperties;
 import com.shylesh.processor_simulator.persistence.OperationType;
+import com.shylesh.processor_simulator.service.BankService;
 import com.shylesh.processor_simulator.service.FaultInjector;
 import com.shylesh.processor_simulator.service.IdempotentExecutor;
 import com.shylesh.processor_simulator.service.PaymentMethodBehaviour;
@@ -38,7 +39,8 @@ import java.util.function.Supplier;
 
 /**
  * A card processor's API, shaped like a real one: every POST takes an Idempotency-Key, declines
- * are 402 with a code, and the outcome of any request can be looked up by its key.
+ * are 402 with a code, and the outcome of any request can be looked up by its key. It also pays
+ * merchants out (bank transfers), with the same conventions.
  */
 @Slf4j
 @Validated
@@ -51,6 +53,7 @@ public class ProcessorController {
     private static final String KEY_PATTERN = "[A-Za-z0-9:._-]{1,100}";
 
     private final ProcessorService processorService;
+    private final BankService bankService;
     private final IdempotentExecutor executor;
     private final FaultInjector faultInjector;
     private final ProcessorProperties properties;
@@ -104,6 +107,28 @@ public class ProcessorController {
         }
         return run(key, OperationType.REVERSAL, hash("REVERSAL", request.originalIdempotencyKey()), null,
                 () -> processorService.reverse(request.originalIdempotencyKey()));
+    }
+
+    /** A payout: 201 PENDING (the bank settles it later), or 402 if the bank can't take it. */
+    @PostMapping("/transfers")
+    public ResponseEntity<String> transfer(@RequestHeader(KEY_HEADER) @Pattern(regexp = KEY_PATTERN) String key,
+                                           @Valid @RequestBody Requests.Transfer request) {
+        return run(key, OperationType.TRANSFER,
+                hash("TRANSFER", request.bankAccount(), money(request.amount()), request.currency(), request.reference()),
+                request.bankAccount(),
+                () -> bankService.transfer(request.bankAccount(), request.amount(), request.currency(), request.reference()));
+    }
+
+    /** A transfer's current state: callers poll it until it is PAID or FAILED (and later, maybe RETURNED). */
+    @GetMapping("/transfers/{transferId}")
+    public ResponseEntity<?> transferStatus(@PathVariable @Pattern(regexp = "tr_[a-f0-9]{32}") String transferId) {
+        Optional<String> fault = faultInjector.failure(transferId, null);
+        if (fault.isPresent()) {
+            return json(ProcessorResult.error(503, "processor_unavailable", fault.get()));
+        }
+        return bankService.find(transferId).<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.status(404)
+                        .body(ProcessorResult.error("ERROR", "transfer_not_found", "No transfer with this id")));
     }
 
     /** Status inquiry: what happened to the request sent with this key (404: never received). */

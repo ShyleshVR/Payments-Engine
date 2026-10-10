@@ -11,6 +11,7 @@ public record WebhookDeadLetterEvent(
         UUID eventId,
         UUID deliveryId,
         UUID paymentId,
+        UUID payoutId,
         UUID merchantId,
         String eventType,
         String url,

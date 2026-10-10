@@ -19,7 +19,7 @@ import java.net.http.HttpClient;
 import java.time.Duration;
 
 /**
- * HTTP clients for the three sources. The ledger and payment APIs are called with an OAuth2
+ * HTTP clients for the sources. The ledger, payment and payout APIs are called with an OAuth2
  * token for this service's own client (client credentials: obtained, cached and renewed by the
  * authorized-client manager, outside any user request); the processor takes its API key.
  */
@@ -47,6 +47,12 @@ public class ApiClientsConfig {
     public RestClient paymentsRestClient(RestClient.Builder builder, ReconciliationProperties properties,
                                          OAuth2AuthorizedClientManager manager) {
         return withToken(builder.clone(), manager).baseUrl(properties.payments().baseUrl()).build();
+    }
+
+    @Bean
+    public RestClient payoutsRestClient(RestClient.Builder builder, ReconciliationProperties properties,
+                                        OAuth2AuthorizedClientManager manager) {
+        return withToken(builder.clone(), manager).baseUrl(properties.payouts().baseUrl()).build();
     }
 
     @Bean

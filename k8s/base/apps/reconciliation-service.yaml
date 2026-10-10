@@ -90,6 +90,8 @@ spec:
               value: http://ledger-service:8082
             - name: PAYFLOW_RECONCILIATION_PAYMENTS_BASE_URL
               value: http://payment-service:8080
+            - name: PAYFLOW_RECONCILIATION_PAYOUTS_BASE_URL
+              value: http://payout-service:8088
           # Up to 3 minutes for the JVM, Flyway migrations and the rest of startup.
           startupProbe:
             httpGet: { path: /actuator/health/liveness, port: http }

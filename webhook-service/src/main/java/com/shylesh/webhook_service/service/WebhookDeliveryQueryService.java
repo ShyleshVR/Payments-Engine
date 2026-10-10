@@ -9,4 +9,6 @@ public interface WebhookDeliveryQueryService {
 
     /** Only this merchant's deliveries for the payment (empty for anyone else's payment). */
     List<WebhookDeliveryResponse> findByPayment(UUID merchantId, UUID paymentId);
+
+    List<WebhookDeliveryResponse> findByPayout(UUID merchantId, UUID payoutId);
 }

@@ -25,8 +25,9 @@ import java.util.stream.Collectors;
 
 /**
  * Three-way reconciliation of one business day: the processor (what money actually did), the
- * ledger (what we booked) and payment-service (what we told the merchant). A pure function, so
- * every rule is tested directly.
+ * ledger (what we booked) and payment-service (what we told the merchant); payouts are checked
+ * the same way against the bank and payout-service (PayoutReconciler). A pure function, so every
+ * rule is tested directly.
  *
  * Checks are per fact: a capture, settlement or refund that happened on the day is checked
  * against its counterpart anywhere in the snapshot's matching window (the day plus a margin), so
@@ -40,17 +41,24 @@ public class Reconciler {
     private static final String REFUND = "REFUND";
 
     /**
-     * @param authorizationGrace how long an authorization of a failed or cancelled payment may stay
-     *                           open (the saga releases it within seconds; this absorbs clock skew)
+     * @param authorizationGrace   how long an authorization of a failed or cancelled payment may stay
+     *                             open (the saga releases it within seconds; this absorbs clock skew)
      * @param refundHoldStaleAfter how long a refund hold may stay open before it is reported
+     * @param payoutReturnGrace    how long a returned payout may wait for its saga to notice
      */
-    public record Settings(Duration authorizationGrace, Duration refundHoldStaleAfter) {
+    public record Settings(Duration authorizationGrace, Duration refundHoldStaleAfter, Duration payoutReturnGrace) {
+
+        public Settings(Duration authorizationGrace, Duration refundHoldStaleAfter) {
+            this(authorizationGrace, refundHoldStaleAfter, Duration.ofHours(2));
+        }
     }
 
     private final Settings settings;
+    private final PayoutReconciler payouts;
 
     public Reconciler(Settings settings) {
         this.settings = settings;
+        this.payouts = new PayoutReconciler(new PayoutReconciler.Settings(settings.payoutReturnGrace()));
     }
 
     public Result reconcile(Snapshot snapshot) {
@@ -98,7 +106,10 @@ public class Reconciler {
                         "Refund hold " + hold.id() + " open since " + hold.createdAt()));
             }
         }
-        return new Result(involved.size(), matched, pending, discrepancies);
+        PayoutReconciler.Outcome payoutOutcome = payouts.reconcile(snapshot);
+        discrepancies.addAll(payoutOutcome.discrepancies());
+        return new Result(involved.size(), matched, pending,
+                payoutOutcome.checked(), payoutOutcome.matched(), payoutOutcome.pending(), discrepancies);
     }
 
     private List<Discrepancy> check(Snapshot snapshot, UUID paymentId, Payment payment, List<Authorization> authorizations,

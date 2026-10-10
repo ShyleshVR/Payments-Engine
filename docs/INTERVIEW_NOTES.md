@@ -6,9 +6,10 @@ answer gives the claim first and the evidence after it.
 
 ## The pitch
 
-**30 seconds.** "PayFlow is a card-payments backend: eight Spring Boot services on Kubernetes
+**30 seconds.** "PayFlow is a card-payments backend: nine Spring Boot services on Kubernetes
 behind an API gateway. Merchants authenticate with OAuth2, payments are authorized and captured
-against a card processor and booked in a double-entry ledger, and merchants get signed webhooks.
+against a card processor and booked in a double-entry ledger, merchants are paid out to their
+bank accounts, and they get signed webhooks.
 The interesting part is correctness under failure. A payment is an orchestrated saga with
 compensation, every hop is idempotent, and every message goes through a transactional outbox. I
 verified it by killing pods and taking the processor and the ledger down mid-flow, and a daily
@@ -32,8 +33,8 @@ Then name the three hardest problems and how each is solved:
 
 | | |
 |---|---|
-| Services / databases / Kafka topics | 8 / 7 / 4 main topics plus dead-letter topics |
-| Automated tests | 359, run in CI on every push; 29 for the saga state machine, 15 Testcontainers saga scenarios, 17 for the reconciler; plus promtool tests for every alert rule |
+| Services / databases / Kafka topics | 9 / 8 / 6 main topics plus dead-letter topics |
+| Automated tests | 433, run in CI on every push; 29 for the payment saga state machine and 21 for the payout one, 15 Testcontainers saga scenarios, 31 reconciliation rules; plus promtool tests for every alert rule |
 | Rolling restart under ~12 req/s | 429 requests, 0 failed |
 | Pods force-killed under traffic | ~1,085 requests, 0 failed (after adding gateway retries for idempotent requests) |
 | Processor outage of 45s, 20 payments in flight | Circuit opened; all 20 succeeded afterwards |
@@ -43,7 +44,8 @@ Then name the three hardest problems and how each is solved:
 | Reconciliation, 52 payments × 3 databases (by hand, saga phase) | 0 discrepancies; debits = credits |
 | Daily reconciliation after a simulated incident (ledger down, 13-min processor outage, ~950 payments) | 916 payments with money movement, 916 matched, 0 discrepancies |
 | Injected corruption (3 kinds) | Each detected with the right type; alert in alert-sink within ~40s; resolved after the fix and a re-run |
-| Alert rules | 14, each unit-tested with promtool; 9 also fired and resolved for real on the cluster |
+| Alert rules | 16, each unit-tested with promtool; 11 also fired for real on the cluster |
+| Payouts on the cluster | Every bank outcome (paid, failed, invalid, returned, stuck) ended right; a bank outage plus a pod kill gave exactly 1 transfer; 7 payouts reconciled with 0 discrepancies, an injected amount change caught |
 | Autoscaling under ~90 req/s | payment-service and gateway 2 → 4 pods, 9,341 responses, 0 errors |
 
 ## Likely questions
@@ -136,6 +138,22 @@ always balance; that is the check. Holds are postings too (balance → reserve),
 holds of 30 against 100, exactly 3 succeed. Removing the lock makes the test fail; I checked
 that to be sure the test really tests the lock.
 
+**How do payouts work, and what stops a payout and a refund spending the same money?**
+- **The saga:** hold the payable balance in the ledger, transfer at the bank (asynchronous:
+  accepted, then paid or failed), finalize; a bank refusal releases the hold.
+- **Payable balance:** only settlements older than the payout delay (T+2), so recent money is
+  left for refunds.
+- **The lock:** the hold takes the same row lock as refund holds, so the ledger decides. Tested
+  with 4 refunds and 4 payouts of 60 racing for 100: exactly one succeeds. On the cluster, a
+  refund and an instant payout racing for one balance: one won.
+- **The pivot:** the transfer. An unknown outcome there is never released; the saga parks, and
+  an operator retries under the same idempotency key.
+
+**What's hard about payouts that payments don't have?** "Paid" isn't final: a bank can return a
+transfer days later. The saga stays open for a return window, keeps checking, and books a return
+back to the merchant (PAYOUT_RETURNED webhook). The reconciliation tolerates a return younger
+than the saga's check interval instead of flagging it.
+
 ### Scaling
 
 **How do multiple replicas avoid doing the same work?** Every worker claims rows with
@@ -220,6 +238,12 @@ the scheduler. An hourly catch-up re-runs any recent day that has no completed r
   memory. The restarted Postgres pod couldn't be scheduled, and the new app pods waited for
   Postgres while the old ones held the memory. Fix: a priority class so infrastructure is always
   scheduled first, and right-sized memory requests.
+- **Alerts that couldn't see a first failure.** On the cluster, three payouts failed and
+  `PayoutsFailing` stayed silent. The counter for each outcome was created on its first
+  increment, so Prometheus' first sample was already 1, and `increase()` counts nothing for a
+  series that starts at its first event. The same flaw sat in `ReconciliationRunFailed`. The
+  promtool tests passed because their series start at 0. Fix: register the counters at 0 on
+  startup. Lesson: an alert test must use the shape the metric really has in production.
 - **An alert that went quiet for the wrong reason.** The first reconciliation alert followed
   only the most recent run. On the first deploy, the catch-up reconciled three days in a row,
   and the last day was clean, so the alert stayed silent while the day before had 218
@@ -239,7 +263,8 @@ the scheduler. An hourly catch-up re-runs any recent day that has no completed r
 | Limit | Why it's acceptable here, and the fix |
 |---|---|
 | One Kafka broker, one Postgres instance | Local footprint; production: 3+ brokers with replication factor 3, managed databases |
-| Payouts don't exist | So merchant balances only shrink through refunds, and the insufficient-balance refund path is reachable only in tests; payouts are the next feature |
+| No fees, FX or negative balances | Payouts pay only what is payable; a real system would net fees, convert currencies, and debit the merchant's bank when refunds exceed the balance |
+| A simulated bank | The bank, like the card processor, is a simulator with test accounts; real rails (ACH, SEPA) bring cut-off times, files and return codes |
 | Polling outboxes and workers | Simple and reliable; change data capture for lower latency at scale |
 | Event classes copied into each service | Explicit and independent, but they can drift; a shared contract module or schema registry is next |
 | Alerts go to an in-cluster receiver | No paging or on-call; Slack is one file away, and production would route critical alerts to a pager |

@@ -31,4 +31,16 @@ public class KafkaTopicsConfig {
     public NewTopic ledgerRepliesDeadLetterTopic() {
         return TopicBuilder.name(LedgerTopics.REPLIES_DLT).partitions(partitions).replicas(replicationFactor).build();
     }
+
+    /** Replies to payout commands, keyed by payout id (per-payout order). */
+    @Bean
+    public NewTopic payoutLedgerRepliesTopic() {
+        return TopicBuilder.name(LedgerTopics.PAYOUT_REPLIES).partitions(partitions).replicas(replicationFactor).build();
+    }
+
+    /** payout-service's dead letters for payout replies. */
+    @Bean
+    public NewTopic payoutLedgerRepliesDeadLetterTopic() {
+        return TopicBuilder.name(LedgerTopics.PAYOUT_REPLIES_DLT).partitions(partitions).replicas(replicationFactor).build();
+    }
 }
