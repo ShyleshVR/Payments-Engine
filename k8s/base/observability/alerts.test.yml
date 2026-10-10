@@ -141,6 +141,8 @@ tests:
         values: '1x10'
       - series: 'up{job="processor-simulator", pod="ps-1"}'
         values: '1x10'
+      - series: 'up{job="payout-service", pod="po-1"}'
+        values: '1x10'
       # reconciliation-service has no target at all (scaled to zero)
     alert_rule_test:
       - eval_time: 3m
@@ -246,6 +248,58 @@ tests:
             exp_annotations:
               summary: "No successful reconciliation for over 26 hours"
               runbook: docs/RECONCILIATION.md#runbook
+
+  - name: payout batch never or long not run
+    interval: 1m
+    input_series:
+      # a batch that completed at t=1h, then never again
+      - series: 'payout_batch_last_success_timestamp_seconds{application="payout-service", pod="po-1"}'
+        values: '0 3600x1800'
+      # another replica, freshly deployed: never ran (0) and must not hide the other's value
+      - series: 'payout_batch_last_success_timestamp_seconds{application="payout-service", pod="po-2"}'
+        values: '0x1800'
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: PayoutBatchNotRun
+        exp_alerts: []
+      - eval_time: 28h
+        alertname: PayoutBatchNotRun
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "No payout batch completed for over 26 hours"
+              runbook: docs/PAYOUTS.md#runbook
+
+  - name: payout batch never ran on a new deployment
+    interval: 1m
+    input_series:
+      - series: 'payout_batch_last_success_timestamp_seconds{application="payout-service", pod="po-1"}'
+        values: '0x2500'
+    alert_rule_test:
+      - eval_time: 40h
+        alertname: PayoutBatchNotRun
+        exp_alerts: []
+
+  - name: payouts failing
+    interval: 1m
+    input_series:
+      - series: 'payouts_status_transitions_total{application="payout-service", pod="po-1", status="FAILED", trigger="BATCH"}'
+        values: '0 1 2 2 2 2 2 2 2 2 2'
+      - series: 'payouts_status_transitions_total{application="payout-service", pod="po-1", status="RETURNED", trigger="BATCH"}'
+        values: '0 0 0 1 1 1 1 1 1 1 1'
+      - series: 'payouts_status_transitions_total{application="payout-service", pod="po-1", status="PAID", trigger="BATCH"}'
+        values: '0+5x10'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: PayoutsFailing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: PayoutsFailing
+        exp_alerts:
+          - exp_labels: { severity: warning }
+            exp_annotations:
+              summary: "3 payouts failed or were returned in the last hour"
+              runbook: docs/PAYOUTS.md#runbook
 
   - name: reconciliation succeeding daily
     interval: 1m

@@ -45,6 +45,8 @@ public interface WebhookDeliveryRepository extends JpaRepository<WebhookDelivery
 
     List<WebhookDelivery> findByPaymentIdAndMerchantIdOrderByCreatedAtAsc(UUID paymentId, UUID merchantId);
 
+    List<WebhookDelivery> findByPayoutIdAndMerchantIdOrderByCreatedAtAsc(UUID payoutId, UUID merchantId);
+
     /**
      * Cancels every open delivery of a subscription. Bumps version so an in-flight attempt's
      * outcome (recorded after its HTTP call) is detected as stale and discarded.

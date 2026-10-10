@@ -13,12 +13,13 @@ http://localhost ──(Service type LoadBalancer :80)──▶ api-gateway ×2 
       ├── /api/v1/payments/**             ─▶ payment-service ×2 (HPA 2–4)
       ├── /api/v1/ledger/**               ─▶ ledger-service ×2
       ├── /api/v1/webhooks/**             ─▶ webhook-service ×2
-      └── /api/v1/reconciliation/**       ─▶ reconciliation-service ×2 (daily job; see RECONCILIATION.md)
+      ├── /api/v1/reconciliation/**       ─▶ reconciliation-service ×2 (daily job; see RECONCILIATION.md)
+      └── /api/v1/payouts/**              ─▶ payout-service ×2 (batch + instant payouts; see PAYOUTS.md)
       notification-service ×2 (no public API)
-      processor-simulator ×2 (card processor stand-in, internal only; see SAGA.md)
+      processor-simulator ×2 (card processor and bank stand-in, internal only; see SAGA.md, PAYOUTS.md)
 
 namespace payflow:
-  postgres   StatefulSet, 1 instance, 7 databases (one per service, each with its own user)
+  postgres   StatefulSet, 1 instance, 8 databases (one per service, each with its own user)
   kafka      StatefulSet, 1 KRaft broker, topics with 3 partitions (events + saga commands/replies)
   redis      rate-limit buckets, idempotency cache
   prometheus (Kubernetes pod discovery, alert rules) · alertmanager ─▶ alert-sink (or Slack)
@@ -106,6 +107,7 @@ and the same credentials.
 | notification-service | Deployment | 2 | 8081 | No HTTP API exposed through the gateway |
 | webhook-service | Deployment | 2 | 8083 | Dispatchers on every replica |
 | reconciliation-service | Deployment | 2 | 8087 | Daily reconciliation; one replica runs it at a time (ShedLock) |
+| payout-service | Deployment | 2 | 8088 | Payout batch (ShedLock) and payout sagas on every replica; demo timings in the local overlay (see PAYOUTS.md) |
 | postgres | StatefulSet + 2Gi PVC | 1 | 5432 | `max_connections=300` for all replicas' pools |
 | kafka | StatefulSet + 2Gi PVC | 1 | 9092 | KRaft (no ZooKeeper), `apache/kafka:4.0.0` |
 | redis | Deployment | 1 | 6379 | No persistence; keys have TTLs |
@@ -300,8 +302,8 @@ Nothing in the code knows it is running in Kubernetes: the same jars run locally
 
 | Secret | Keys | Used by |
 |---|---|---|
-| `payflow-db` | `postgres-password`, `<service>-password` × 7 | Postgres init script and each service's datasource |
-| `payflow-auth` | `admin-client-secret`, `grafana-admin-password`, `processor-api-key`, `reconciliation-client-secret` | merchant-service bootstrap admin client, Grafana, payment-service and reconciliation-service → processor-simulator, reconciliation-service's OAuth2 client |
+| `payflow-db` | `postgres-password`, `<service>-password` × 8 | Postgres init script and each service's datasource |
+| `payflow-auth` | `admin-client-secret`, `grafana-admin-password`, `processor-api-key`, `reconciliation-client-secret`, `payout-client-secret` | merchant-service bootstrap admin client, Grafana, payment-, payout- and reconciliation-service → processor-simulator, the reconciliation's and payout-service's OAuth2 clients |
 | `payflow-signing-key` | `signing-key.pem` (RSA 2048, PKCS#8) | merchant-service |
 
 The passwords are random, and the script never changes an existing value (keys added in later
@@ -377,6 +379,7 @@ down, it suppresses that service's warnings. Resolved notifications are sent too
 | `InstanceDown` | warning | One replica is down (2m); not kafka-exporter, which is `KafkaUnreachable` |
 | `GatewayErrorRate` | warning | Over 5% of gateway responses are 5xx (5m) |
 | `ReconciliationDiscrepancies`, `ReconciliationNotRun`, `ReconciliationRunFailed` | critical / warning | See [RECONCILIATION.md](RECONCILIATION.md#metrics-and-alerts) |
+| `PayoutBatchNotRun`, `PayoutsFailing` | warning | See [PAYOUTS.md](PAYOUTS.md#metrics-and-alerts); parked or stuck payout sagas raise the saga alerts above (application payout-service) |
 
 Two metrics sources were added for these alerts:
 - **Backlog gauges** in payment-service and the ledger: `outbox_pending`, `outbox_failed`,
@@ -390,8 +393,8 @@ Two metrics sources were added for these alerts:
 
 Each alert in this table fired for a real failure on the local cluster, reached alert-sink, and
 resolved on its own once the failure was fixed. The rest (`OutboxMessageParked`,
-`DeadLettersArriving`, `GatewayErrorRate`, `ReconciliationNotRun`, `ReconciliationRunFailed`)
-are covered by the promtool tests only:
+`DeadLettersArriving`, `GatewayErrorRate`, `ReconciliationNotRun`, `PayoutBatchNotRun`) are
+covered by the promtool tests only:
 
 | Scenario | Alerts (time after the failure began) |
 |---|---|
@@ -400,11 +403,20 @@ are covered by the promtool tests only:
 | A manual capture requested during the outage | Its outcome was unknown for 10 minutes, so the saga was parked: `SagaRequiresAttention`. After `POST …/saga/retry` the capture completed and the alert resolved |
 | Kafka scaled to 0 while 20 payments were created | `OutboxBacklog` (4.8 min) and `KafkaUnreachable` (2.7 min); after Kafka returned, all 20 settled and both resolved |
 | Reconciliation with injected corruption | See [RECONCILIATION.md](RECONCILIATION.md#on-the-cluster) |
+| A payout transfer stuck in transit past its timeout | `SagaRequiresAttention` for application payout-service (the same rule as payment sagas); resolved after an operator retry ([PAYOUTS.md](PAYOUTS.md#testing)) |
+| Three payouts to an invalid bank account | `PayoutsFailing` within a minute (after the counter fix below) |
+| A manual reconciliation with the ledger scaled to 0 | The run failed; `ReconciliationRunFailed` within a minute (after the counter fix below) |
 
 After the incident, the day's reconciliation (916 payments, including those failed or delayed
 by the outages) matched every payment, with 0 discrepancies.
 
-These runs exposed three problems, all fixed:
+These runs exposed four problems, all fixed:
+- **Counter-based alerts that couldn't see a first event.** Outcome counters were created on
+  their first increment, so Prometheus first saw each series at 1, and `increase()` counts
+  nothing for a series that starts with its event. `PayoutsFailing` stayed silent with three
+  failed payouts, and `ReconciliationRunFailed` would have missed the first failed run. The
+  counters are now registered at 0 on startup, and tests check that they exist. The promtool
+  tests couldn't catch this: their series start at 0.
 - **Stale consumer offsets.** `KafkaConsumerLag` kept firing for `ledger-service` on
   `payment-created`, a topic the ledger stopped consuming when the sagas arrived. Its old
   committed offsets were still there, so lag grew with every payment. The alert was right:
@@ -516,13 +528,14 @@ its pom excludes it.
 | Module | Tests | Notes |
 |---|---|---|
 | payment-service | 80 | including the saga scenarios (see SAGA.md) and the audit lookup |
-| ledger-service | 31 | including the audit endpoints and outbox gauges |
+| ledger-service | 38 | including the audit endpoints, outbox gauges and payout commands |
 | notification-service | 34 | context-load test excluded |
-| webhook-service | 124 | |
+| webhook-service | 128 | including payout webhooks |
 | merchant-service | 32 | including `PemFileJwkSourceTest` and `PemSigningKeyIntegrationTest` (Testcontainers): the PEM key signs, its thumbprint is the `kid`, no database key is created; and the configured service clients |
-| api-gateway | 16 | see below |
-| processor-simulator | 17 | including the settlement report |
-| reconciliation-service | 25 | see [RECONCILIATION.md](RECONCILIATION.md#testing) |
+| api-gateway | 17 | see below |
+| processor-simulator | 27 | including the settlement report and bank transfers |
+| reconciliation-service | 41 | see [RECONCILIATION.md](RECONCILIATION.md#testing) |
+| payout-service | 36 | see [PAYOUTS.md](PAYOUTS.md#testing) |
 | alert rules | every rule | `promtool test rules alerts.test.yml`; `amtool check-config` on both Alertmanager configurations |
 
 The api-gateway tests run the real gateway (routes, security, rate limiter on a Redis
@@ -549,7 +562,7 @@ would be matched by WebFlux's handler mapping *before* the gateway's route mappi
 would never pass through the routes and their filters. An early version of the tests passed
 security checks that way while the rate limiter never ran.
 
-**Manifests:** the rendered overlays (`local`: 59 resources; `local-slack`: 60) pass kubeconform `-strict` against the
+**Manifests:** the rendered overlays (`local`: 62 resources; `local-slack`: 63) pass kubeconform `-strict` against the
 Kubernetes 1.31 schemas.
 
 **On the cluster** (Docker Desktop Kubernetes 1.34, all traffic through `http://localhost`):
@@ -586,6 +599,7 @@ get 503.
 | `k8s/base/observability/alertmanager.yml`, `alert_sink.py` | Routing, inhibition and the in-cluster receiver |
 | `k8s/overlays/local/` | Image tags, generated Secrets, LoadBalancer UIs, webhook dev settings |
 | `k8s/overlays/local-slack/` | `local` plus a Slack receiver, used when `secrets/slack-webhook-url` exists |
+| `payout-service/` | Payouts: `saga/` (state machine, orchestrator, worker), `batch/` (daily job, ShedLock), `payout/` (payouts, destinations), `client/` (bank, ledger), `web/` |
 | `scripts/build-images.sh` | `mvn package` + `docker build` per service |
 | `scripts/generate-local-secrets.sh` | Random passwords and the signing key, created once |
 | `scripts/k8s-up.sh` / `k8s-down.sh` | Deploy and wait / delete the namespace |

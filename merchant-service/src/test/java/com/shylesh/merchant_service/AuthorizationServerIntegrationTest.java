@@ -133,7 +133,8 @@ class AuthorizationServerIntegrationTest {
 
         assertThat(claims.get("merchant_id").asText()).isEqualTo(merchant.get("merchantId").asText());
         assertThat(claims.get("sub").asText()).isEqualTo(clientId);
-        assertThat(claims.get("scope").toString()).contains("payments:write", "payments:read", "ledger:read", "webhooks:manage")
+        assertThat(claims.get("scope").toString()).contains("payments:write", "payments:read", "ledger:read", "webhooks:manage",
+                        "payouts:read", "payouts:write")
                 .doesNotContain("payments:operate");
         long ttl = claims.get("exp").asLong() - claims.get("iat").asLong();
         assertThat(ttl).isEqualTo(15 * 60);

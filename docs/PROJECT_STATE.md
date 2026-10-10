@@ -11,14 +11,18 @@
 | Kubernetes and gateway | API gateway, Kustomize deployment, autoscaling, probes, CI | [DEPLOYMENT.md](DEPLOYMENT.md) |
 | Sagas | Processor integration (simulator), orchestrated payment and refund sagas, ledger commands, one trace per payment | [SAGA.md](SAGA.md) |
 | Alerting and reconciliation | Prometheus alert rules (promtool-tested) and Alertmanager with runbooks; reconciliation-service: daily three-way reconciliation of processor, ledger and payments | [RECONCILIATION.md](RECONCILIATION.md), [DEPLOYMENT.md](DEPLOYMENT.md#alerting) |
+| Merchant payouts | payout-service: daily batch and instant payouts as sagas, funds availability (payable balance), an asynchronous bank with failures and returns, payout webhooks, payouts in the daily reconciliation, payout alerts | [PAYOUTS.md](PAYOUTS.md) |
 
 ## Next candidates
 
-- **Merchant payouts:** pay out settled balances in batches, as a saga; completes the money flow.
+- **Load test with performance targets:** k6 or Gatling against the cluster, p99 latency and
+  sustained throughput, bottlenecks found and fixed.
+- **Payout refinements:** fees, multi-currency (FX), negative balances with bank debits, payout
+  schedules per merchant.
 - **Engineering cleanup:**
   - a shared event-contract module or schema registry;
   - Testcontainers tests for the notification and webhook claim queries;
   - time-ordered UUIDv7 identifiers (see ADR-001);
-  - a load test with performance targets.
+  - a shared saga library (payment-service and payout-service copy the machinery).
 - **Production readiness:** images in a registry, GitOps deployment, a 3-broker Kafka cluster,
   managed Postgres, External Secrets, network policies.

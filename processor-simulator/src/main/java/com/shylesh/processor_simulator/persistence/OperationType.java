@@ -6,6 +6,7 @@ public enum OperationType {
     CAPTURE,
     VOID,
     REFUND,
-    REVERSAL
+    REVERSAL,
+    TRANSFER
 
 }

@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -32,9 +33,9 @@ public class LedgerQueryServiceImpl implements LedgerQueryService {
     public AccountBalanceResponse getBalance(LedgerAccountType ownerType, UUID ownerId, String currency) {
 
         BigDecimal balance = balanceOf(ownerType, ownerId, currency);
-        BigDecimal reserved = ownerType == LedgerAccountType.MERCHANT
-                ? balanceOf(LedgerAccountType.MERCHANT_REFUND_RESERVE, ownerId, currency)
-                : null;
+        boolean merchant = ownerType == LedgerAccountType.MERCHANT;
+        BigDecimal reserved = merchant ? balanceOf(LedgerAccountType.MERCHANT_REFUND_RESERVE, ownerId, currency) : null;
+        BigDecimal payoutReserved = merchant ? balanceOf(LedgerAccountType.MERCHANT_PAYOUT_RESERVE, ownerId, currency) : null;
 
         return AccountBalanceResponse.builder()
                 .ownerType(ownerType)
@@ -42,7 +43,27 @@ public class LedgerQueryServiceImpl implements LedgerQueryService {
                 .currency(currency)
                 .balance(balance)
                 .reserved(reserved)
+                .payoutReserved(payoutReserved)
                 .build();
+    }
+
+    @Override
+    public BigDecimal getPayable(UUID merchantId, String currency, LocalDateTime cutoff) {
+        return accountRepository.findByOwnerTypeAndOwnerIdAndCurrency(LedgerAccountType.MERCHANT, merchantId, currency)
+                .map(account -> entryRepository.sumBalanceByAccountId(account.getId())
+                        .subtract(entryRepository.sumSettlementCreditsSince(account.getId(), cutoff))
+                        .max(BigDecimal.ZERO))
+                .orElse(BigDecimal.ZERO);
+    }
+
+    @Override
+    public List<LedgerEntryRepository.PayableBalance> getPayableBalances(LocalDateTime cutoff, BigDecimal minimum) {
+        return entryRepository.findPayableBalances(cutoff, minimum);
+    }
+
+    @Override
+    public List<LedgerTransactionResponse> getTransactionsForPayout(UUID payoutId) {
+        return withEntries(transactionRepository.findByPayoutIdOrderByCreatedAtAsc(payoutId));
     }
 
     private BigDecimal balanceOf(LedgerAccountType ownerType, UUID ownerId, String currency) {
@@ -54,8 +75,10 @@ public class LedgerQueryServiceImpl implements LedgerQueryService {
 
     @Override
     public List<LedgerTransactionResponse> getTransactionsForPayment(UUID paymentId) {
-        List<LedgerTransaction> transactions = transactionRepository.findByPaymentIdOrderByCreatedAtAsc(paymentId);
+        return withEntries(transactionRepository.findByPaymentIdOrderByCreatedAtAsc(paymentId));
+    }
 
+    private List<LedgerTransactionResponse> withEntries(List<LedgerTransaction> transactions) {
         List<UUID> transactionIds = transactions.stream().map(LedgerTransaction::getId).toList();
 
         Map<UUID, List<LedgerEntry>> entriesByTransactionId = entryRepository
@@ -101,6 +124,7 @@ public class LedgerQueryServiceImpl implements LedgerQueryService {
         return LedgerTransactionResponse.builder()
                 .transactionId(transaction.getId())
                 .paymentId(transaction.getPaymentId())
+                .payoutId(transaction.getPayoutId())
                 .type(transaction.getType())
                 .createdAt(transaction.getCreatedAt())
                 .entries(entries)

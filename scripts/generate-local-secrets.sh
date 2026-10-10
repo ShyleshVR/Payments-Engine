@@ -21,7 +21,7 @@ ensure() {
 }
 
 ensure secrets/db.env postgres-password
-for svc in payment ledger notification webhook merchant processor recon; do
+for svc in payment ledger notification webhook merchant processor recon payout; do
   ensure secrets/db.env "$svc-password"
 done
 
@@ -29,6 +29,7 @@ ensure secrets/auth.env admin-client-secret
 ensure secrets/auth.env grafana-admin-password
 ensure secrets/auth.env processor-api-key
 ensure secrets/auth.env reconciliation-client-secret
+ensure secrets/auth.env payout-client-secret
 
 if [ ! -f secrets/signing-key.pem ]; then
   # PKCS#8 PEM, as merchant-service's PemFileJwkSource expects.

@@ -4,8 +4,9 @@ PayFlow takes card payments for merchants:
 - it authorizes and captures them against a card processor;
 - it books them in a double-entry ledger;
 - it refunds them;
+- it pays merchants out to their bank accounts, daily or on demand;
 - it tells merchants (webhooks) and customers (notifications) what happened;
-- every night, it checks its books against the processor's.
+- every night, it checks its books against the processor's and the bank's.
 
 The design goal is **correct money movement under failure**. Any request, message, pod or
 dependency can fail or repeat at any point, and no payment may be charged twice, booked twice,
@@ -32,10 +33,15 @@ flowchart LR
     K -- payment events --> WS
     K -- payment events --> NS[notification-service<br/>customer emails]
     WS -->|signed POST| ME([Merchant endpoint])
+    GW --> PO[payout-service<br/>batch + instant payouts]
+    PO -- ledger-commands --> K
+    K -- payout-ledger-replies --> PO
+    PO -->|bank transfers| PR
+    PO -- payout events --> K
     GW --> RS[reconciliation-service<br/>daily three-way check]
     RS -.->|settlement report| PR
     RS -.->|transactions| LS
-    RS -.->|payment statuses| PS
+    RS -.->|payment and payout statuses| PS
     PS --- PG1[(Postgres)]
     LS --- PG2[(Postgres)]
     MS --- PG3[(Postgres)]
@@ -43,6 +49,7 @@ flowchart LR
     NS --- PG5[(Postgres)]
     PR --- PG6[(Postgres)]
     RS --- PG7[(Postgres)]
+    PO --- PG8[(Postgres)]
     GW --- R[(Redis)]
     PS --- R
 ```
@@ -56,10 +63,11 @@ flowchart LR
 | **ledger-service** | accounts, transactions, entries, processed commands, outbox | payment-service (Kafka replies) | gateway: `/api/v1/ledger/**` |
 | **webhook-service** | subscriptions (with signing secrets), deliveries, attempts | merchant endpoints (HTTPS) | gateway: `/api/v1/webhooks/**` |
 | **notification-service** | notifications, delivery attempts | email channel (stub) | no API |
-| **reconciliation-service** | reconciliation runs and discrepancies, scheduler lock | processor (report), ledger and payment-service (read-only APIs, its own OAuth2 client) | gateway: `/api/v1/reconciliation/**` |
+| **reconciliation-service** | reconciliation runs and discrepancies, scheduler lock | processor (report), ledger, payment-service and payout-service (read-only APIs, its own OAuth2 client) | gateway: `/api/v1/reconciliation/**` |
+| **payout-service** | payouts, payout sagas and their step history, destinations, batches, outbox, scheduler lock | ledger (Kafka commands; payable balances over its API), the bank (HTTP, in processor-simulator) | gateway: `/api/v1/payouts/**` |
 
 Each service has its own database and user; nothing reads another service's tables. Locally,
-the seven databases share one Postgres instance to save memory; in production each would be its
+the eight databases share one Postgres instance to save memory; in production each would be its
 own managed instance. Redis holds only data that can be lost: rate-limit buckets, and an
 idempotency cache backed by the database.
 
@@ -94,6 +102,13 @@ capture, the point where money actually moves (see [Consistency](#consistency)).
 same way: the ledger holds the amount from the merchant's balance, the processor refunds, and
 the ledger finalizes. If the processor refuses, the hold is released.
 
+**Payouts** run the same pattern in payout-service, against a bank instead of the card processor.
+The ledger holds the merchant's payable balance: only money that settled long enough ago, so
+recent settlements stay available for refunds. The bank transfers it asynchronously (accepted,
+then paid or failed), and the ledger finalizes or releases. Payout sagas then keep watching a
+paid transfer for a while, because a bank can send the money back days later; a return is
+booked back to the merchant ([PAYOUTS.md](PAYOUTS.md)).
+
 All of the above is **one trace** in Jaeger. The trace context is stored on the saga and on
 every outbox row and continued wherever the work resumes.
 
@@ -102,8 +117,10 @@ every outbox row and continued wherever the work resumes.
 | Topic | Producer | Consumers | Key | Carries |
 |---|---|---|---|---|
 | `payment-created` | payment-service | webhook-service, notification-service | payment id | Payment events: CREATED, AUTHORIZED, COMPLETED, FAILED, CANCELLED, REFUNDED, REFUND_FAILED |
-| `ledger-commands` | payment-service | ledger-service | payment id | SETTLE_PAYMENT, HOLD_REFUND, RELEASE_HOLD, FINALIZE_REFUND |
+| `ledger-commands` | payment-service, payout-service | ledger-service | payment or payout id | SETTLE_PAYMENT, HOLD_REFUND, RELEASE_HOLD, FINALIZE_REFUND; HOLD_PAYOUT, RELEASE_PAYOUT, FINALIZE_PAYOUT, RETURN_PAYOUT |
 | `ledger-replies` | ledger-service | payment-service | payment id | SUCCEEDED / REJECTED with a reason |
+| `payout-ledger-replies` | ledger-service | payout-service | payout id | The same, for payout commands (routed by command type) |
+| `payout-events` | payout-service | webhook-service | payout id | PAYOUT_CREATED, PAID, FAILED, RETURNED |
 | `*.DLT` | each consumer's error handler | operators | as source | Messages that can never be processed |
 | `webhook-deliveries.DLT`, `notification-events.DLT` | webhook / notification | operators | — | Deliveries that failed for good |
 
@@ -121,21 +138,22 @@ out after it took effect. The system is built so that none of this changes the o
 
 | Mechanism | Where | What it guarantees |
 |---|---|---|
-| **Transactional outbox** | payment-service, ledger-service, webhook DLT relay | State change and message commit together: no message for a rolled-back change, no change without its message |
+| **Transactional outbox** | payment-service, ledger-service, payout-service, webhook DLT relay | State change and message commit together: no message for a rolled-back change, no change without its message |
 | **Idempotent consumers** | ledger (`processed_commands`), webhook and notification (`processed_events`) | A message delivered twice takes effect once; a repeated ledger command gets its original reply again |
-| **Idempotency keys** | merchant → payment API; saga → processor | A retried request returns the first result. The processor stores responses per key and rejects a key reused with a different body |
+| **Idempotency keys** | merchant → payment and payout APIs; sagas → processor and bank | A retried request returns the first result. The processor stores responses per key and rejects a key reused with a different body |
 | **Reversal by key** | saga → processor | An authorization whose answer was lost can be cancelled whether it was processed or not; if it arrives late, it is rejected |
-| **Orchestrated saga** | payment-service | Steps before the capture are compensated (void, release hold); steps after it are retried; an unknown capture outcome is parked for an operator, never guessed |
+| **Orchestrated saga** | payment-service, payout-service | Steps before the pivot (capture, transfer) are compensated (void, release hold); steps after it are retried; an unknown outcome at the pivot is parked for an operator, never guessed |
 | **Claims and leases** | saga worker, outbox relays, webhook and notification dispatchers | `FOR UPDATE SKIP LOCKED` plus a lease and an attempt or version check: any number of replicas share the work, and a result from a worker whose lease ran out is discarded |
 | **Business-key guards** | ledger | A payment is settled at most once even under a different command id; a release or finalize needs this saga's open hold |
-| **Row locks for money** | ledger holds, processor authorizations | Two concurrent refunds can't spend the same balance; two captures can't both succeed |
+| **Row locks for money** | ledger holds, processor authorizations | Two concurrent refunds, or a refund and a payout, can't spend the same balance; two captures can't both succeed |
 
 This was checked on the live cluster by reconciling every payment across the payment, processor
 and ledger databases after outages and pod kills. All three agreed every time (see
 [SAGA.md](SAGA.md#cluster-verification)). That check now runs **every day** in production form:
 reconciliation-service reads the processor's settlement report, the ledger's transactions and
 payment-service's statuses through APIs (never their databases), reports each disagreement by
-type, and alerts until the day is clean ([RECONCILIATION.md](RECONCILIATION.md)).
+type, and alerts until the day is clean ([RECONCILIATION.md](RECONCILIATION.md)). Payouts are
+reconciled the same way: the bank's transfers, the ledger's payout postings and payout-service.
 
 ## Failure handling
 
@@ -180,7 +198,7 @@ type, and alerts until the day is clean ([RECONCILIATION.md](RECONCILIATION.md))
   class so Postgres, Kafka and Redis are always scheduled first.
 - **Infrastructure in the cluster.** Postgres, Kafka in KRaft mode, Redis, Prometheus,
   Alertmanager, Grafana, Jaeger and a Kafka exporter.
-- **CI on every push and pull request.** GitHub Actions runs all eight test suites, builds the
+- **CI on every push and pull request.** GitHub Actions runs all nine test suites, builds the
   images, unit-tests the alert rules, checks the Alertmanager configuration, and validates the
   rendered manifests against the Kubernetes API schemas.
 
@@ -208,7 +226,7 @@ type, and alerts until the day is clean ([RECONCILIATION.md](RECONCILIATION.md))
 | Integration (Testcontainers) | Real Postgres, Kafka and Redis: the saga against a stub processor and a stub ledger (15 scenarios), ledger concurrency, the processor's idempotency under 8 concurrent duplicates, the authorization server, the gateway in front of a real upstream |
 | Live cluster | Every test card end to end; processor outage under load; ledger scaled to zero; pods force-killed; rolling restarts under traffic; autoscaling under load; a reconciliation of every payment across three databases; a simulated incident in which each alert fired and resolved; injected corruption caught by the daily reconciliation |
 
-359 automated tests run in CI, along with the alert-rule tests. Results of the cluster runs are
+433 automated tests run in CI, along with the alert-rule tests. Results of the cluster runs are
 recorded in [DEPLOYMENT.md](DEPLOYMENT.md#testing), [SAGA.md](SAGA.md#cluster-verification),
 [DEPLOYMENT.md](DEPLOYMENT.md#verified-on-the-cluster) (alerts) and
 [RECONCILIATION.md](RECONCILIATION.md#on-the-cluster).
@@ -219,5 +237,6 @@ recorded in [DEPLOYMENT.md](DEPLOYMENT.md#testing), [SAGA.md](SAGA.md#cluster-ve
 - [SAGA.md](SAGA.md): sagas, compensation, processor and ledger protocols
 - [MERCHANT_AUTH.md](MERCHANT_AUTH.md): authentication and authorization
 - [WEBHOOK_SERVICE.md](WEBHOOK_SERVICE.md): webhook delivery
+- [PAYOUTS.md](PAYOUTS.md): merchant payouts
 - [RECONCILIATION.md](RECONCILIATION.md): the daily reconciliation
 - [DEPLOYMENT.md](DEPLOYMENT.md): Kubernetes, gateway, alerting and CI

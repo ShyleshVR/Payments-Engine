@@ -16,6 +16,7 @@ images:
   - { name: payflow/payment-service, newTag: local }
   - { name: payflow/processor-simulator, newTag: local }
   - { name: payflow/reconciliation-service, newTag: local }
+  - { name: payflow/payout-service, newTag: local }
   - { name: payflow/ledger-service, newTag: local }
   - { name: payflow/notification-service, newTag: local }
   - { name: payflow/webhook-service, newTag: local }
@@ -42,11 +43,39 @@ patches:
         value: LoadBalancer
   # Smaller memory requests than the base (512Mi): these JVMs use ~300-400Mi, and a single
   # Docker Desktop node must fit 16 application pods plus a rollout's surge pods.
-  - target: { kind: Deployment, name: "api-gateway|merchant-service|payment-service|processor-simulator|reconciliation-service|ledger-service|notification-service|webhook-service" }
+  - target: { kind: Deployment, name: "api-gateway|merchant-service|payment-service|processor-simulator|reconciliation-service|payout-service|ledger-service|notification-service|webhook-service" }
     patch: |-
       - op: replace
         path: /spec/template/spec/containers/0/resources/requests/memory
         value: 384Mi
+  # Payout timings on a demo clock: money settled 2 minutes ago is payable, the bank (simulator)
+  # settles in ~20s, and a paid payout is watched for returns for 3 minutes instead of 5 days.
+  - target: { kind: Deployment, name: payout-service }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: PAYFLOW_PAYOUTS_DELAY, value: PT2M }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: PAYFLOW_PAYOUTS_SAGA_TRANSITPOLLINTERVAL, value: 5s }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: PAYFLOW_PAYOUTS_SAGA_INTRANSITTIMEOUT, value: 3m }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: PAYFLOW_PAYOUTS_SAGA_RETURNWINDOW, value: 3m }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: PAYFLOW_PAYOUTS_SAGA_RETURNCHECKINTERVAL, value: 10s }
+  # The reconciliation on the same demo clock for payouts.
+  - target: { kind: Deployment, name: reconciliation-service }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: PAYFLOW_RECONCILIATION_PAYOUTHOLDSTALEAFTER, value: 10m }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: PAYFLOW_RECONCILIATION_PAYOUTRETURNGRACE, value: 1m }
   # Webhook endpoints may be plain-http in-cluster addresses here (a test receiver). Never in
   # production: that is what the SSRF guard exists to prevent.
   - target: { kind: Deployment, name: webhook-service }

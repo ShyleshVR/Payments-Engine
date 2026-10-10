@@ -75,6 +75,11 @@ spring:
               uri: ${payflow.gateway.routes.reconciliation}
               predicates:
                 - Path=/api/v1/reconciliation/**
+            # Merchant payouts (destination, instant payouts, history) and the operator payout API.
+            - id: payout-service
+              uri: ${payflow.gateway.routes.payout}
+              predicates:
+                - Path=/api/v1/payouts/**
 
 payflow:
   gateway:
@@ -85,6 +90,7 @@ payflow:
       ledger: http://localhost:8082
       webhook: http://localhost:8083
       reconciliation: http://localhost:8087
+      payout: http://localhost:8088
     rate-limit:
       # Sustained requests per second per caller, and how many can arrive at once.
       replenish-rate: 20

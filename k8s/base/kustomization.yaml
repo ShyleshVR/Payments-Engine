@@ -26,6 +26,7 @@ resources:
   - apps/payment-service.yaml
   - apps/processor-simulator.yaml
   - apps/reconciliation-service.yaml
+  - apps/payout-service.yaml
   - apps/ledger-service.yaml
   - apps/notification-service.yaml
   - apps/webhook-service.yaml

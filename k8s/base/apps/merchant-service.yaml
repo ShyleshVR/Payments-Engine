@@ -82,6 +82,8 @@ spec:
               valueFrom: { secretKeyRef: { name: payflow-auth, key: admin-client-secret } }
             - name: PAYFLOW_RECONCILIATION_CLIENT_SECRET
               valueFrom: { secretKeyRef: { name: payflow-auth, key: reconciliation-client-secret } }
+            - name: PAYFLOW_PAYOUT_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: payflow-auth, key: payout-client-secret } }
             - name: PAYFLOW_AUTH_SIGNINGKEY_LOCATION
               value: file:/etc/payflow/signing-key/signing-key.pem
           # Up to 3 minutes for the JVM, Flyway migrations and the rest of startup.

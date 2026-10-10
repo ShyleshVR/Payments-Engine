@@ -33,8 +33,13 @@ public class WebhookDelivery {
     @Column(name = "event_type", nullable = false, updatable = false)
     private String eventType;
 
-    @Column(name = "payment_id", nullable = false, updatable = false)
+    /** The payment the event is about (null for a payout event). */
+    @Column(name = "payment_id", updatable = false)
     private UUID paymentId;
+
+    /** The payout the event is about (null for a payment event). */
+    @Column(name = "payout_id", updatable = false)
+    private UUID payoutId;
 
     @Column(name = "merchant_id", nullable = false, updatable = false)
     private UUID merchantId;

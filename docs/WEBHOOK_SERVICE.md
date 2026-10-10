@@ -6,8 +6,9 @@ succeeds, is retried, or is recorded as failed and dead-lettered.
 
 - Port: **8083**
 - Database: `webhook_db` (container `webhook-postgres`, host port **55434**)
-- Consumes: Kafka topic `payment-created` (consumer group `webhook-service`)
-- Produces: `webhook-deliveries.DLT` (deliveries that failed for good), `payment-created.DLT` (unprocessable messages)
+- Consumes: Kafka topics `payment-created` and `payout-events` (consumer group `webhook-service`)
+- Produces: `webhook-deliveries.DLT` (deliveries that failed for good), `payment-created.DLT` and
+  `payout-events.DLT` (unprocessable messages)
 
 ```
 payment-service ──outbox──▶ Kafka "payment-created" ──▶ webhook-service ──HTTPS POST──▶ merchant server
@@ -235,6 +236,22 @@ X-Webhook-Signature: sha256=<hex(HMAC-SHA256(secret, "1791190000." + rawBody))>
 The body is rendered once when the delivery is created; every retry sends the same bytes. The
 timestamp and signature are recomputed for each attempt.
 
+### Payout webhooks
+
+Payout events from payout-service (`PAYOUT_CREATED`, `PAYOUT_PAID`, `PAYOUT_FAILED`,
+`PAYOUT_RETURNED`) go to the same subscription, with the same signature, retries and dead
+letters. Their body is a separate contract, versioned on its own (`1.0`):
+
+```json
+{"payloadVersion":"1.0","eventId":"…","eventType":"PAYOUT_RETURNED","payoutId":"po_…",
+ "merchantId":"…","amount":60.0000,"currency":"USD","status":"RETURNED",
+ "occurredAt":"2026-10-09T18:12:01Z","failureCode":"account_frozen"}
+```
+
+`PAYOUT_PAID` doesn't mean final: a bank can send a payout back later (`PAYOUT_RETURNED`). A
+delivery row is about a payment or a payout (`payment_id` / `payout_id`, a database CHECK keeps
+exactly one). See [PAYOUTS.md](PAYOUTS.md#webhooks).
+
 ### What merchants must do
 
 1. **Verify the signature** over the **raw** body bytes, compare in constant time, and reject
@@ -274,6 +291,7 @@ Every call needs a merchant access token with the `webhooks:manage` scope
 | `GET /api/v1/webhooks/subscriptions` | The caller's active subscription, without the secret, or **404** |
 | `DELETE /api/v1/webhooks/subscriptions` | **204**. Deactivates the subscription and **cancels pending deliveries** in the same transaction. **404** if none is active. |
 | `GET /api/v1/webhooks/deliveries/payment/{paymentId}` | Audit trail of the caller's deliveries and attempts for a payment. Accepts `pay_<uuid>` or a raw UUID. Another merchant's payment yields an empty list. |
+| `GET /api/v1/webhooks/deliveries/payout/{payoutId}` | The same for a payout (`po_<uuid>` or a raw UUID). |
 
 To change a URL, delete the subscription and create a new one. Missing or invalid tokens get
 **401**, a missing scope or an operator token without a merchant gets **403**.

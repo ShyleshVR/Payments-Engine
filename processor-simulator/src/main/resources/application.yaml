@@ -31,6 +31,13 @@ processor:
     error-rate: 0.0
     # Added to every request.
     latency: 0ms
+  # Bank transfers (payouts), sped up from days to seconds; test accounts decide the outcome
+  # (see BankAccountBehaviour).
+  bank:
+    settle-delay: 20s
+    slow-settle-delay: 10m
+    return-delay: 60s
+    clock-interval: 2s
 
 management:
   endpoint:

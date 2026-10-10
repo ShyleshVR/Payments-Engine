@@ -21,8 +21,13 @@ public class LedgerTransaction {
     @Column(name = "event_id", nullable = false, updatable = false)
     private UUID eventId;
 
-    @Column(name = "payment_id", nullable = false, updatable = false)
+    /** The payment posted for (null for a payout's postings). */
+    @Column(name = "payment_id", updatable = false)
     private UUID paymentId;
+
+    /** The payout posted for (null for a payment's postings). */
+    @Column(name = "payout_id", updatable = false)
+    private UUID payoutId;
 
     /** The saga this posting belongs to (null for postings made before sagas). */
     @Column(name = "saga_id", updatable = false)

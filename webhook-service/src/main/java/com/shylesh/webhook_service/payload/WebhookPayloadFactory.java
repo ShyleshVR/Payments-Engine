@@ -3,6 +3,7 @@ package com.shylesh.webhook_service.payload;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.shylesh.webhook_service.event.PaymentEvent;
+import com.shylesh.webhook_service.event.PayoutEvent;
 
 import lombok.RequiredArgsConstructor;
 
@@ -20,14 +21,46 @@ public class WebhookPayloadFactory {
 
     private static final String PUBLIC_PAYMENT_ID_PREFIX = "pay_";
 
+    /** Payout webhooks have their own contract, versioned separately. */
+    public static final String CURRENT_PAYOUT_PAYLOAD_VERSION = "1.0";
+
+    private static final String PUBLIC_PAYOUT_ID_PREFIX = "po_";
+
     private final ObjectMapper objectMapper;
 
+    public PayoutWebhookPayload create(PayoutEvent event) {
+        return new PayoutWebhookPayload(
+                CURRENT_PAYOUT_PAYLOAD_VERSION,
+                event.eventId(),
+                event.eventType(),
+                PUBLIC_PAYOUT_ID_PREFIX + event.data().getPayoutId(),
+                event.data().getMerchantId(),
+                event.data().getAmount(),
+                event.data().getCurrency(),
+                event.data().getStatus(),
+                instant(event.occurredAt()),
+                event.data().getFailureCode()
+        );
+    }
+
+    public String render(PayoutWebhookPayload payload) {
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize webhook payload for event " + payload.eventId(), e);
+        }
+    }
+
+    /**
+     * occurredAt is UTC without an offset on the internal wire; merchants get an explicit
+     * ISO-8601 instant ("...Z") so there is no timezone guesswork on their side.
+     */
+    private static String instant(java.time.LocalDateTime occurredAt) {
+        return occurredAt == null ? null : DateTimeFormatter.ISO_INSTANT.format(occurredAt.toInstant(ZoneOffset.UTC));
+    }
+
     public WebhookPayload create(PaymentEvent event) {
-        // occurredAt is UTC without an offset on the internal wire; merchants get an explicit
-        // ISO-8601 instant ("...Z") so there is no timezone guesswork on their side.
-        String occurredAt = event.occurredAt() == null
-                ? null
-                : DateTimeFormatter.ISO_INSTANT.format(event.occurredAt().toInstant(ZoneOffset.UTC));
+        String occurredAt = instant(event.occurredAt());
 
         return new WebhookPayload(
                 CURRENT_PAYLOAD_VERSION,

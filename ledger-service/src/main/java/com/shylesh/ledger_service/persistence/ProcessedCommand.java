@@ -22,8 +22,11 @@ public class ProcessedCommand {
     @Column(name = "command_type", nullable = false, updatable = false, length = 40)
     private String commandType;
 
-    @Column(name = "payment_id", nullable = false, updatable = false)
+    @Column(name = "payment_id", updatable = false)
     private UUID paymentId;
+
+    @Column(name = "payout_id", updatable = false)
+    private UUID payoutId;
 
     /** The reply data as JSON. */
     @Column(nullable = false, updatable = false, columnDefinition = "TEXT")

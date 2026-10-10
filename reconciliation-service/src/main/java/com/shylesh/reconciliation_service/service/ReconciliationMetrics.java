@@ -5,7 +5,9 @@ import com.shylesh.reconciliation_service.persistence.ReconciliationDiscrepancyR
 import com.shylesh.reconciliation_service.persistence.ReconciliationRun;
 import com.shylesh.reconciliation_service.persistence.ReconciliationRunRepository;
 import com.shylesh.reconciliation_service.persistence.RunStatus;
+import com.shylesh.reconciliation_service.persistence.RunTrigger;
 
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 
@@ -19,6 +21,7 @@ import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -50,6 +53,15 @@ public class ReconciliationMetrics {
         this.runRepository = runRepository;
         this.discrepancyRepository = discrepancyRepository;
         this.clock = clock;
+
+        // Registered at 0 up front: a series that first appears at 1 makes increase() miss that
+        // first run, and ReconciliationRunFailed would never see the first failure.
+        for (RunStatus status : List.of(RunStatus.COMPLETED, RunStatus.FAILED)) {
+            for (RunTrigger trigger : RunTrigger.values()) {
+                Counter.builder("reconciliation.runs")
+                        .tag("status", status.name()).tag("trigger", trigger.name()).register(registry);
+            }
+        }
 
         Gauge.builder("reconciliation.last.success.timestamp", lastSuccessEpochSeconds, AtomicLong::get)
                 .baseUnit("seconds")

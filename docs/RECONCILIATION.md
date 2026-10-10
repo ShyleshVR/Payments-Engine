@@ -6,7 +6,8 @@ Every night, `reconciliation-service` checks the previous day's money three ways
 - **the ledger**: what PayFlow booked;
 - **payment-service**: what PayFlow told the merchant.
 
-It reports every payment on which they disagree, and an alert fires.
+It reports every payment on which they disagree, and an alert fires. Payouts are checked the same
+way, against the bank's transfers and payout-service ([Payouts](#payouts)).
 
 The sagas are built so that the three never disagree: outboxes, idempotency keys, compensation.
 Reconciliation is the independent check that this holds in production, where bugs, manual
@@ -37,7 +38,8 @@ because the processor's records, not your own, decide what customers were charge
 8. [Runbook](#runbook)
 9. [Configuration](#configuration)
 10. [Design decisions](#design-decisions)
-11. [Testing](#testing)
+11. [Payouts](#payouts)
+12. [Testing](#testing)
 
 ---
 
@@ -214,6 +216,35 @@ merchant-service).
 | Pre-processor payments out of scope, flagged per payment | They have no processor record by design; the flag comes from the data (no payment method), not a cut-over date to configure | They are not reconciled at all (their ledger postings still balance) |
 | Alert on each recent day's latest run | A clean day reconciled later can't hide a bad one | Resolving needs a clean re-run of that day |
 
+## Payouts
+
+Payouts are reconciled in the same run, by `PayoutReconciler` (a pure function, 14 unit tests).
+Its sources are:
+- the bank's transfers, from the same settlement report;
+- the ledger's `PAYOUT` and `PAYOUT_RETURN` postings;
+- payout-service's statuses, via `POST /api/v1/payouts/lookup`, scope `payouts:audit` (the
+  reconciliation client gained it).
+
+| Type | Meaning |
+|---|---|
+| `PAID_NOT_BOOKED` | The bank paid a merchant; the ledger never booked the payout |
+| `BOOKED_NOT_PAID` | The ledger booked a payout the bank never paid |
+| `PAYOUT_AMOUNT_MISMATCH` | Both exist; amounts or currencies differ |
+| `RETURN_NOT_BOOKED` | The bank sent a payout back; the ledger doesn't show it |
+| `RETURN_BOOKED_NOT_RETURNED` | The ledger booked a return the bank never made |
+| `PAYOUT_STATUS_MISMATCH` | The payout's status contradicts the money (expected: RETURNED if returned, PAID if paid, FAILED otherwise) |
+| `PAYOUT_HOLD_STALE` | A payout hold open longer than a transfer can take (`payout-hold-stale-after`, 4 days) |
+| `UNKNOWN_PAYOUT` | Money moved for a payout payout-service doesn't know |
+
+Some payouts are pending, not discrepancies:
+- a payout whose saga is still working (holding, in transit, finalizing, a return being booked);
+- a return younger than `payout-return-grace` (2 hours), which the saga, checking hourly,
+  hasn't booked yet.
+
+A paid payout in its return window is checked: by then everything is booked. Runs report payout
+counts separately (`payoutsChecked`, `payoutsMatched`, `payoutsPending`); discrepancies carry a
+`payoutId` (`po_…`) instead of a `paymentId`. See [PAYOUTS.md](PAYOUTS.md).
+
 ## Testing
 
 - **Reconciler (17 unit tests):**
@@ -224,7 +255,7 @@ merchant-service).
   - in-flight payments are pending;
   - pre-processor payments are left out;
   - stale vs fresh holds.
-- **Integration (8 tests, Postgres in Testcontainers, a stub HTTP server for the token endpoint
+- **Integration (10 tests, Postgres in Testcontainers, a stub HTTP server for the token endpoint
   and all three sources):**
   - a manual run finds the expected discrepancies;
   - the sources are called with the right credentials (client-credentials token, Bearer on the
@@ -232,6 +263,8 @@ merchant-service).
   - metrics reflect the latest run, and a day keeps alerting until it is re-run clean, whatever
     days are reconciled after it;
   - a partial capture is compared by the amount actually captured;
+  - payouts: a day with a paid and a returned-but-unbooked payout, reported by payout id;
+  - the run counters exist from startup, so the first failed run alerts;
   - an unreadable source fails the run;
   - two concurrent "replicas" reconcile each finished day exactly once;
   - API security, future dates, and a 409 for a day already running.

@@ -30,6 +30,19 @@ public final class Requests {
     ) {
     }
 
+    /**
+     * A payout to a merchant's bank account.
+     *
+     * @param reference the caller's own id for the payout, echoed for reconciliation
+     */
+    public record Transfer(
+            @NotBlank @Size(max = 64) String bankAccount,
+            @NotNull @DecimalMin("0.01") @Digits(integer = 15, fraction = 4) BigDecimal amount,
+            @NotBlank @Pattern(regexp = "[A-Z]{3}") String currency,
+            @Size(max = 100) String reference
+    ) {
+    }
+
     /** @param originalIdempotencyKey the Idempotency-Key of the authorization request to cancel */
     public record Reversal(
             @NotBlank @Size(max = 100) String originalIdempotencyKey

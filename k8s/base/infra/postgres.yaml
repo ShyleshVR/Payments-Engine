@@ -58,6 +58,8 @@ spec:
               valueFrom: { secretKeyRef: { name: payflow-db, key: processor-password } }
             - name: RECON_DB_PASSWORD
               valueFrom: { secretKeyRef: { name: payflow-db, key: recon-password } }
+            - name: PAYOUT_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: payflow-db, key: payout-password } }
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "postgres"]

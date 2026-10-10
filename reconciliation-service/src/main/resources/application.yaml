@@ -31,7 +31,7 @@ spring:
             client-id: reconciliation-service
             client-secret: ${PAYFLOW_RECONCILIATION_CLIENT_SECRET:local-dev-reconciliation-secret}
             authorization-grant-type: client_credentials
-            scope: ledger:admin,payments:audit
+            scope: ledger:admin,payments:audit,payouts:audit
         provider:
           payflow:
             token-uri: http://localhost:8084/oauth2/token
@@ -44,6 +44,10 @@ payflow:
     matching-margin: 1h
     authorization-grace: 1h
     refund-hold-stale-after: 1h
+    # a transfer takes days: only a payout hold open longer than that is reported
+    payout-hold-stale-after: 4d
+    # a payout returned by the bank may wait this long for the payout saga to book it
+    payout-return-grace: 2h
     processor:
       base-url: http://localhost:8086
       api-key: ${PAYFLOW_PROCESSOR_API_KEY:local-dev-processor-key}
@@ -51,6 +55,8 @@ payflow:
       base-url: http://localhost:8082
     payments:
       base-url: http://localhost:8080
+    payouts:
+      base-url: http://localhost:8088
 
 management:
   endpoint:

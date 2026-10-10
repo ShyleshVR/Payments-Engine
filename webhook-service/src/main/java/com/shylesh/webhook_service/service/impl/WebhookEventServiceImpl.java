@@ -2,6 +2,8 @@ package com.shylesh.webhook_service.service.impl;
 
 import com.shylesh.webhook_service.event.PaymentEvent;
 import com.shylesh.webhook_service.event.PaymentEventType;
+import com.shylesh.webhook_service.event.PayoutEvent;
+import com.shylesh.webhook_service.event.PayoutEventType;
 import com.shylesh.webhook_service.payload.WebhookPayloadFactory;
 import com.shylesh.webhook_service.persistence.MerchantWebhookSubscription;
 import com.shylesh.webhook_service.persistence.MerchantWebhookSubscriptionRepository;
@@ -23,9 +25,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Turns a payment event into a PENDING delivery for the merchant's active subscription. The
- * delivery row and the processed_events marker commit together, so an event is either fully
- * accepted or redelivered by Kafka and handled again.
+ * Turns a payment or payout event into a PENDING delivery for the merchant's active
+ * subscription. The delivery row and the processed_events marker commit together, so an event
+ * is either fully accepted or redelivered by Kafka and handled again.
  */
 @Service
 @RequiredArgsConstructor
@@ -40,56 +42,70 @@ public class WebhookEventServiceImpl implements WebhookEventService {
     @Override
     @Transactional
     public void handle(PaymentEvent event) {
+        enqueue(event.eventId(), event.eventType(), PaymentEventType.parse(event.eventType()).isPresent(),
+                event.data().getMerchantId(), event.data().getPaymentId(), null,
+                () -> payloadFactory.render(payloadFactory.create(event)));
+    }
 
-        if (processedEventRepository.existsById(event.eventId())) {
-            log.info("Skipping already-processed event. eventId={}, eventType={}", event.eventId(), event.eventType());
+    @Override
+    @Transactional
+    public void handle(PayoutEvent event) {
+        enqueue(event.eventId(), event.eventType(), PayoutEventType.parse(event.eventType()).isPresent(),
+                event.data().getMerchantId(), null, event.data().getPayoutId(),
+                () -> payloadFactory.render(payloadFactory.create(event)));
+    }
+
+    private void enqueue(UUID eventId, String eventType, boolean delivered, UUID merchantId, UUID paymentId, UUID payoutId,
+                         java.util.function.Supplier<String> payload) {
+
+        if (processedEventRepository.existsById(eventId)) {
+            log.info("Skipping already-processed event. eventId={}, eventType={}", eventId, eventType);
             return;
         }
 
         LocalDateTime now = LocalDateTime.now();
 
-        if (PaymentEventType.parse(event.eventType()).isEmpty()) {
-            log.info("Event type is not delivered as a webhook, skipping. eventId={}, eventType={}",
-                    event.eventId(), event.eventType());
-            markProcessed(event, now);
+        if (!delivered) {
+            log.info("Event type is not delivered as a webhook, skipping. eventId={}, eventType={}", eventId, eventType);
+            markProcessed(eventId, eventType, now);
             return;
         }
 
-        UUID merchantId = event.data().getMerchantId();
         Optional<MerchantWebhookSubscription> subscription = subscriptionRepository.findByMerchantIdAndActiveTrue(merchantId);
 
         if (subscription.isEmpty()) {
-            log.debug("No active webhook subscription, skipping. eventId={}, merchantId={}", event.eventId(), merchantId);
-            markProcessed(event, now);
+            log.debug("No active webhook subscription, skipping. eventId={}, merchantId={}", eventId, merchantId);
+            markProcessed(eventId, eventType, now);
             return;
         }
 
         WebhookDelivery delivery = WebhookDelivery.builder()
                 .id(UUID.randomUUID())
-                .eventId(event.eventId())
-                .eventType(event.eventType())
-                .paymentId(event.data().getPaymentId())
+                .eventId(eventId)
+                .eventType(eventType)
+                .paymentId(paymentId)
+                .payoutId(payoutId)
                 .merchantId(merchantId)
                 .subscriptionId(subscription.get().getId())
                 .url(subscription.get().getUrl())
-                .payload(payloadFactory.render(payloadFactory.create(event)))
+                .payload(payload.get())
                 .status(WebhookDeliveryStatus.PENDING)
                 .nextAttemptAt(now)
                 .build();
 
         deliveryRepository.save(delivery);
-        markProcessed(event, now);
+        markProcessed(eventId, eventType, now);
 
         log.info(
                 "Webhook delivery queued. deliveryId={}, eventId={}, eventType={}, merchantId={}",
                 delivery.getId(),
-                event.eventId(),
-                event.eventType(),
+                eventId,
+                eventType,
                 merchantId
         );
     }
 
-    private void markProcessed(PaymentEvent event, LocalDateTime now) {
-        processedEventRepository.save(new ProcessedEvent(event.eventId(), event.eventType(), now));
+    private void markProcessed(UUID eventId, String eventType, LocalDateTime now) {
+        processedEventRepository.save(new ProcessedEvent(eventId, eventType, now));
     }
 }

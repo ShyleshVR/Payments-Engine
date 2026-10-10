@@ -29,12 +29,19 @@ public class LedgerPoster {
      */
     public LedgerTransaction post(UUID sourceId, UUID paymentId, UUID sagaId, LedgerTransactionType type,
                                   UUID debitAccountId, UUID creditAccountId, BigDecimal amount, String currency) {
+        return post(sourceId, paymentId, null, sagaId, type, debitAccountId, creditAccountId, amount, currency);
+    }
+
+    /** A posting for a payment (paymentId) or a payout (payoutId): exactly one of the two is set. */
+    public LedgerTransaction post(UUID sourceId, UUID paymentId, UUID payoutId, UUID sagaId, LedgerTransactionType type,
+                                  UUID debitAccountId, UUID creditAccountId, BigDecimal amount, String currency) {
         LocalDateTime now = LocalDateTime.now();
         LedgerTransaction transaction = transactionRepository.save(
                 LedgerTransaction.builder()
                         .id(UUID.randomUUID())
                         .eventId(sourceId)
                         .paymentId(paymentId)
+                        .payoutId(payoutId)
                         .sagaId(sagaId)
                         .type(type)
                         .createdAt(now)

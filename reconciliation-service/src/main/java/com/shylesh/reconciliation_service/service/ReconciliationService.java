@@ -70,6 +70,7 @@ public class ReconciliationService {
                         .runId(run.getId())
                         .type(d.type())
                         .paymentId(d.paymentId())
+                        .payoutId(d.payoutId())
                         .processorAmount(d.processorAmount())
                         .ledgerAmount(d.ledgerAmount())
                         .paymentStatus(d.paymentStatus())
@@ -78,11 +79,12 @@ public class ReconciliationService {
                 run.complete(result, now());
                 runRepository.save(run);
             });
-            log.info("Reconciled {} ({}): checked {}, matched {}, pending {}, discrepancies {}",
-                    businessDate, trigger, result.checked(), result.matched(), result.pending(), result.discrepancies().size());
+            log.info("Reconciled {} ({}): payments checked {}, matched {}, pending {}; payouts checked {}, matched {}, pending {}; discrepancies {}",
+                    businessDate, trigger, result.checked(), result.matched(), result.pending(),
+                    result.payoutsChecked(), result.payoutsMatched(), result.payoutsPending(), result.discrepancies().size());
             if (!result.discrepancies().isEmpty()) {
-                log.warn("Reconciliation of {} found discrepancies: {}", businessDate,
-                        result.discrepancies().stream().map(d -> d.type() + " " + d.paymentId()).toList());
+                log.warn("Reconciliation of {} found discrepancies: {}", businessDate, result.discrepancies().stream()
+                        .map(d -> d.type() + " " + (d.paymentId() != null ? d.paymentId() : d.payoutId())).toList());
             }
         } catch (RuntimeException e) {
             log.error("Reconciliation of {} failed: {}", businessDate, e.toString(), e);
@@ -111,6 +113,7 @@ public class ReconciliationService {
         SourceClient.ProcessorRecords processor = sources.processorReport(from, to);
         List<Records.LedgerTransaction> ledger = sources.ledgerTransactions(from, to);
         List<Records.LedgerTransaction> openHolds = sources.openRefundHolds(now.minus(properties.refundHoldStaleAfter()));
+        List<Records.LedgerTransaction> openPayoutHolds = sources.openPayoutHolds(now.minus(properties.payoutHoldStaleAfter()));
 
         Set<UUID> paymentIds = new LinkedHashSet<>();
         Stream.of(processor.authorizations().stream().map(Records.Authorization::paymentId),
@@ -122,8 +125,17 @@ public class ReconciliationService {
                 .forEach(paymentIds::add);
         Map<UUID, Records.Payment> payments = sources.payments(paymentIds);
 
+        Set<UUID> payoutIds = new LinkedHashSet<>();
+        Stream.of(processor.transfers().stream().map(Records.Transfer::payoutId),
+                        ledger.stream().map(Records.LedgerTransaction::payoutId),
+                        openPayoutHolds.stream().map(Records.LedgerTransaction::payoutId))
+                .flatMap(s -> s)
+                .filter(Objects::nonNull)
+                .forEach(payoutIds::add);
+        Map<UUID, Records.Payout> payouts = payoutIds.isEmpty() ? Map.of() : sources.payouts(payoutIds);
+
         return new Records.Snapshot(dayStart, dayEnd, now, processor.authorizations(), processor.refunds(),
-                ledger, openHolds, payments);
+                ledger, openHolds, payments, processor.transfers(), openPayoutHolds, payouts);
     }
 
     private LocalDateTime now() {

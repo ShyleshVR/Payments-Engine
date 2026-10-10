@@ -48,6 +48,15 @@ public class ReconciliationRun {
 
     private Integer pending;
 
+    @Column(name = "payouts_checked")
+    private Integer payoutsChecked;
+
+    @Column(name = "payouts_matched")
+    private Integer payoutsMatched;
+
+    @Column(name = "payouts_pending")
+    private Integer payoutsPending;
+
     @Column(name = "discrepancy_count")
     private Integer discrepancyCount;
 
@@ -69,6 +78,9 @@ public class ReconciliationRun {
         this.paymentsChecked = result.checked();
         this.matched = result.matched();
         this.pending = result.pending();
+        this.payoutsChecked = result.payoutsChecked();
+        this.payoutsMatched = result.payoutsMatched();
+        this.payoutsPending = result.payoutsPending();
         this.discrepancyCount = result.discrepancies().size();
         this.finishedAt = now;
     }

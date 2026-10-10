@@ -2,7 +2,6 @@ package com.shylesh.ledger_service.command;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.shylesh.ledger_service.config.LedgerTopics;
 import com.shylesh.ledger_service.outbox.OutboxEvent;
 import com.shylesh.ledger_service.outbox.OutboxEventRepository;
 import com.shylesh.ledger_service.outbox.OutboxEventStatus;
@@ -35,9 +34,12 @@ import java.util.UUID;
  * stored reply again: the orchestrator re-sends a command whose reply is late, and Kafka may
  * redeliver.
  *
- * Accounts per merchant and currency: MERCHANT (available balance) and MERCHANT_REFUND_RESERVE
- * (refunds in progress). A refund is held first, then either released (processor refused) or
- * finalized (processor refunded); a hold only succeeds if the available balance covers it.
+ * Accounts per merchant and currency: MERCHANT (available balance), MERCHANT_REFUND_RESERVE
+ * (refunds in progress) and MERCHANT_PAYOUT_RESERVE (payouts in progress). A refund or payout is
+ * held first, then either released (processor or bank refused) or finalized; a hold only succeeds
+ * if the balance covers it. A payout may only take the payable balance: settlements newer than
+ * the command's cutoff stay in the balance (for refunds) until they are old enough. A paid payout
+ * can still come back from the merchant's bank: RETURN_PAYOUT credits it back.
  */
 @Slf4j
 @Service
@@ -46,6 +48,13 @@ public class LedgerCommandHandler {
 
     static final String INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS";
     static final String NO_ACTIVE_HOLD = "NO_ACTIVE_HOLD";
+    static final String NOT_PAID_OUT = "NOT_PAID_OUT";
+    static final String ALREADY_RETURNED = "ALREADY_RETURNED";
+
+    private static final List<LedgerTransactionType> REFUND_HOLD_CLOSERS =
+            List.of(LedgerTransactionType.REFUND_HOLD_RELEASE, LedgerTransactionType.REFUND);
+    private static final List<LedgerTransactionType> PAYOUT_HOLD_CLOSERS =
+            List.of(LedgerTransactionType.PAYOUT_HOLD_RELEASE, LedgerTransactionType.PAYOUT);
 
     private final ProcessedCommandRepository processedCommandRepository;
     private final LedgerAccountResolver accountResolver;
@@ -74,19 +83,24 @@ public class LedgerCommandHandler {
             case HOLD_REFUND -> hold(command);
             case RELEASE_HOLD -> releaseHold(command);
             case FINALIZE_REFUND -> finalizeRefund(command);
+            case HOLD_PAYOUT -> holdPayout(command);
+            case RELEASE_PAYOUT -> releasePayout(command);
+            case FINALIZE_PAYOUT -> finalizePayout(command);
+            case RETURN_PAYOUT -> returnPayout(command);
         };
 
         processedCommandRepository.save(ProcessedCommand.builder()
                 .commandId(command.getCommandId())
                 .commandType(command.getCommandType())
                 .paymentId(command.getPaymentId())
+                .payoutId(command.getPayoutId())
                 .reply(write(reply))
                 .processedAt(LocalDateTime.now())
                 .build());
         enqueueReply(reply);
         count(command, reply, false);
-        log.info("Handled ledger command. commandId={}, type={}, outcome={}, reason={}",
-                command.getCommandId(), command.getCommandType(), reply.outcome(), reply.reason());
+        log.info("Handled ledger command. commandId={}, type={}, subject={}, outcome={}, reason={}",
+                command.getCommandId(), command.getCommandType(), command.subjectId(), reply.outcome(), reply.reason());
         return reply;
     }
 
@@ -125,7 +139,7 @@ public class LedgerCommandHandler {
 
     /** Compensation: the processor refused the refund, so the held amount goes back. */
     private LedgerReply releaseHold(LedgerCommand command) {
-        if (!hasActiveHold(command)) {
+        if (!hasActiveHold(command, LedgerTransactionType.REFUND_HOLD, REFUND_HOLD_CLOSERS)) {
             return LedgerReply.rejected(command, NO_ACTIVE_HOLD);
         }
         LedgerTransaction transaction = poster.post(command.getCommandId(), command.getPaymentId(), command.getSagaId(),
@@ -136,7 +150,7 @@ public class LedgerCommandHandler {
 
     /** The processor refunded: the held amount leaves through platform clearing. */
     private LedgerReply finalizeRefund(LedgerCommand command) {
-        if (!hasActiveHold(command)) {
+        if (!hasActiveHold(command, LedgerTransactionType.REFUND_HOLD, REFUND_HOLD_CLOSERS)) {
             return LedgerReply.rejected(command, NO_ACTIVE_HOLD);
         }
         LedgerAccount platform = accountResolver.resolve(LedgerAccountType.PLATFORM_CLEARING, null, command.getCurrency());
@@ -147,23 +161,94 @@ public class LedgerCommandHandler {
     }
 
     /**
+     * Moves the payout amount into the merchant's payout reserve, if the payable balance covers
+     * it: the balance minus settlements since the cutoff, checked under the same row lock as
+     * refund holds, so a refund and a payout can't both spend one balance. A payout is held at
+     * most once, whatever the command id.
+     */
+    private LedgerReply holdPayout(LedgerCommand command) {
+        Optional<LedgerTransaction> existing = transactionRepository
+                .findFirstByPayoutIdAndType(command.getPayoutId(), LedgerTransactionType.PAYOUT_HOLD);
+        if (existing.isPresent()) {
+            return LedgerReply.succeeded(command, existing.get().getId());
+        }
+        LedgerAccount merchant = merchantAccount(command);
+        accountRepository.findByIdForUpdate(merchant.getId()).orElseThrow();
+        BigDecimal balance = entryRepository.sumBalanceByAccountId(merchant.getId());
+        BigDecimal payable = balance.subtract(entryRepository.sumSettlementCreditsSince(merchant.getId(), command.getCutoff()));
+        if (payable.compareTo(command.getAmount()) < 0) {
+            return LedgerReply.rejected(command, INSUFFICIENT_FUNDS);
+        }
+        LedgerTransaction transaction = poster.post(command.getCommandId(), null, command.getPayoutId(), command.getSagaId(),
+                LedgerTransactionType.PAYOUT_HOLD, merchant.getId(), payoutReserveAccount(command).getId(),
+                command.getAmount(), command.getCurrency());
+        return LedgerReply.succeeded(command, transaction.getId());
+    }
+
+    /** Compensation: the bank rejected or failed the transfer, so the held amount goes back. */
+    private LedgerReply releasePayout(LedgerCommand command) {
+        if (!hasActiveHold(command, LedgerTransactionType.PAYOUT_HOLD, PAYOUT_HOLD_CLOSERS)) {
+            return LedgerReply.rejected(command, NO_ACTIVE_HOLD);
+        }
+        LedgerTransaction transaction = poster.post(command.getCommandId(), null, command.getPayoutId(), command.getSagaId(),
+                LedgerTransactionType.PAYOUT_HOLD_RELEASE, payoutReserveAccount(command).getId(), merchantAccount(command).getId(),
+                command.getAmount(), command.getCurrency());
+        return LedgerReply.succeeded(command, transaction.getId());
+    }
+
+    /** The bank paid the transfer: the held amount leaves through payout clearing. */
+    private LedgerReply finalizePayout(LedgerCommand command) {
+        if (!hasActiveHold(command, LedgerTransactionType.PAYOUT_HOLD, PAYOUT_HOLD_CLOSERS)) {
+            return LedgerReply.rejected(command, NO_ACTIVE_HOLD);
+        }
+        LedgerAccount clearing = accountResolver.resolve(LedgerAccountType.PAYOUT_CLEARING, null, command.getCurrency());
+        LedgerTransaction transaction = poster.post(command.getCommandId(), null, command.getPayoutId(), command.getSagaId(),
+                LedgerTransactionType.PAYOUT, payoutReserveAccount(command).getId(), clearing.getId(),
+                command.getAmount(), command.getCurrency());
+        return LedgerReply.succeeded(command, transaction.getId());
+    }
+
+    /**
+     * The merchant's bank sent a paid transfer back: the amount returns to their balance. Only
+     * for this saga's payout, of the same amount, and only once.
+     */
+    private LedgerReply returnPayout(LedgerCommand command) {
+        List<LedgerTransaction> sagaTransactions = transactionRepository.findBySagaIdOrderByCreatedAtAsc(command.getSagaId());
+        Optional<LedgerTransaction> payout = sagaTransactions.stream()
+                .filter(t -> t.getType() == LedgerTransactionType.PAYOUT)
+                .findFirst();
+        if (payout.isEmpty() || amountOf(payout.get()).compareTo(command.getAmount()) != 0) {
+            return LedgerReply.rejected(command, NOT_PAID_OUT);
+        }
+        if (sagaTransactions.stream().anyMatch(t -> t.getType() == LedgerTransactionType.PAYOUT_RETURN)) {
+            return LedgerReply.rejected(command, ALREADY_RETURNED);
+        }
+        LedgerAccount clearing = accountResolver.resolve(LedgerAccountType.PAYOUT_CLEARING, null, command.getCurrency());
+        LedgerTransaction transaction = poster.post(command.getCommandId(), null, command.getPayoutId(), command.getSagaId(),
+                LedgerTransactionType.PAYOUT_RETURN, clearing.getId(), merchantAccount(command).getId(),
+                command.getAmount(), command.getCurrency());
+        return LedgerReply.succeeded(command, transaction.getId());
+    }
+
+    /**
      * Release and finalize need this saga's hold, not yet released or finalized, of the same
      * amount. Anything else means the orchestrator and the ledger disagree, which must not be
      * papered over: the command is rejected and the saga stops for an operator.
      */
-    private boolean hasActiveHold(LedgerCommand command) {
+    private boolean hasActiveHold(LedgerCommand command, LedgerTransactionType holdType, List<LedgerTransactionType> closers) {
         List<LedgerTransaction> sagaTransactions = transactionRepository.findBySagaIdOrderByCreatedAtAsc(command.getSagaId());
         Optional<LedgerTransaction> hold = sagaTransactions.stream()
-                .filter(t -> t.getType() == LedgerTransactionType.REFUND_HOLD)
+                .filter(t -> t.getType() == holdType)
                 .findFirst();
-        boolean settled = sagaTransactions.stream().anyMatch(t ->
-                t.getType() == LedgerTransactionType.REFUND_HOLD_RELEASE || t.getType() == LedgerTransactionType.REFUND);
-        if (hold.isEmpty() || settled) {
+        boolean closed = sagaTransactions.stream().anyMatch(t -> closers.contains(t.getType()));
+        if (hold.isEmpty() || closed) {
             return false;
         }
-        BigDecimal heldAmount = entryRepository.findByTransactionIdInOrderByCreatedAtAsc(List.of(hold.get().getId()))
-                .getFirst().getAmount();
-        return heldAmount.compareTo(command.getAmount()) == 0;
+        return amountOf(hold.get()).compareTo(command.getAmount()) == 0;
+    }
+
+    private BigDecimal amountOf(LedgerTransaction transaction) {
+        return entryRepository.findByTransactionIdInOrderByCreatedAtAsc(List.of(transaction.getId())).getFirst().getAmount();
     }
 
     private LedgerAccount merchantAccount(LedgerCommand command) {
@@ -172,6 +257,10 @@ public class LedgerCommandHandler {
 
     private LedgerAccount reserveAccount(LedgerCommand command) {
         return accountResolver.resolve(LedgerAccountType.MERCHANT_REFUND_RESERVE, command.getMerchantId(), command.getCurrency());
+    }
+
+    private LedgerAccount payoutReserveAccount(LedgerCommand command) {
+        return accountResolver.resolve(LedgerAccountType.MERCHANT_PAYOUT_RESERVE, command.getMerchantId(), command.getCurrency());
     }
 
     private void enqueueReply(LedgerReply reply) {
@@ -184,8 +273,8 @@ public class LedgerCommandHandler {
         envelope.put("data", reply);
         outboxEventRepository.save(OutboxEvent.builder()
                 .id(messageId)
-                .aggregateId(reply.paymentId())
-                .topic(LedgerTopics.REPLIES)
+                .aggregateId(reply.subjectId())
+                .topic(reply.replyTopic())
                 .eventType("LEDGER_REPLY")
                 .payload(write(envelope))
                 .status(OutboxEventStatus.PENDING)

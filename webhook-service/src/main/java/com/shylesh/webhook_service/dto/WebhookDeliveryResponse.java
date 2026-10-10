@@ -7,12 +7,16 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
-/** paymentId is in the public "pay_" form, matching the payment API and webhook payloads. */
+/**
+ * paymentId ("pay_") or payoutId ("po_"), in the public form of the payment and payout APIs and
+ * their webhook payloads; the other one is null.
+ */
 public record WebhookDeliveryResponse(
         UUID deliveryId,
         UUID eventId,
         String eventType,
         String paymentId,
+        String payoutId,
         UUID merchantId,
         String url,
         WebhookDeliveryStatus status,
@@ -29,7 +33,8 @@ public record WebhookDeliveryResponse(
                 delivery.getId(),
                 delivery.getEventId(),
                 delivery.getEventType(),
-                "pay_" + delivery.getPaymentId(),
+                delivery.getPaymentId() == null ? null : "pay_" + delivery.getPaymentId(),
+                delivery.getPayoutId() == null ? null : "po_" + delivery.getPayoutId(),
                 delivery.getMerchantId(),
                 delivery.getUrl(),
                 delivery.getStatus(),

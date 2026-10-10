@@ -27,6 +27,8 @@ class StubSources {
     volatile String openHolds = "[]";
     /** Answer to every lookup (the stub doesn't filter by the requested ids). */
     volatile String payments = "[]";
+    volatile String payouts = "[]";
+    volatile String openPayoutHolds = "[]";
     volatile boolean ledgerDown;
 
     StubSources() throws IOException {
@@ -53,6 +55,8 @@ class StubSources {
         ledgerPages = List.of("{\"items\":[],\"hasNext\":false}");
         openHolds = "[]";
         payments = "[]";
+        payouts = "[]";
+        openPayoutHolds = "[]";
         ledgerDown = false;
     }
 
@@ -79,6 +83,10 @@ class StubSources {
             respond(exchange, 200, openHolds);
         } else if (path.equals("/api/v1/payments/lookup")) {
             respond(exchange, 200, payments);
+        } else if (path.equals("/api/v1/payouts/lookup")) {
+            respond(exchange, 200, payouts);
+        } else if (path.equals("/api/v1/ledger/payout-holds/open")) {
+            respond(exchange, 200, openPayoutHolds);
         } else {
             respond(exchange, 404, "{}");
         }

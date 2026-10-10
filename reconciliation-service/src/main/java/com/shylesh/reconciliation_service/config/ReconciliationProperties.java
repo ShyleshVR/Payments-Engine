@@ -13,6 +13,9 @@ import java.time.Duration;
  *                             23:59 settled at 00:01); a day is reconciled only once this has passed
  * @param authorizationGrace   how long a failed payment's authorization may stay open
  * @param refundHoldStaleAfter how long a ledger refund hold may stay open
+ * @param payoutHoldStaleAfter how long a ledger payout hold may stay open (a transfer takes days)
+ * @param payoutReturnGrace    how long a payout returned by the bank may wait for the payout
+ *                             saga to notice and book it
  */
 @ConfigurationProperties(prefix = "payflow.reconciliation")
 public record ReconciliationProperties(
@@ -21,9 +24,12 @@ public record ReconciliationProperties(
         @DefaultValue("1h") Duration matchingMargin,
         @DefaultValue("1h") Duration authorizationGrace,
         @DefaultValue("1h") Duration refundHoldStaleAfter,
+        @DefaultValue("4d") Duration payoutHoldStaleAfter,
+        @DefaultValue("2h") Duration payoutReturnGrace,
         Endpoint processor,
         Endpoint ledger,
-        Endpoint payments
+        Endpoint payments,
+        Endpoint payouts
 ) {
 
     /** @param apiKey processor only (the ledger and payment APIs take OAuth2 tokens) */

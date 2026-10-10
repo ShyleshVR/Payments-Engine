@@ -4,6 +4,8 @@ import com.shylesh.processor_simulator.persistence.Authorization;
 import com.shylesh.processor_simulator.persistence.AuthorizationRepository;
 import com.shylesh.processor_simulator.persistence.Refund;
 import com.shylesh.processor_simulator.persistence.RefundRepository;
+import com.shylesh.processor_simulator.persistence.Transfer;
+import com.shylesh.processor_simulator.persistence.TransferRepository;
 
 import lombok.RequiredArgsConstructor;
 
@@ -25,9 +27,9 @@ import java.util.stream.Collectors;
 
 /**
  * The processor's own record of a period, as acquirers publish it daily (a settlement file):
- * every authorization created, captured or voided in [from, to), and every refund. The
- * merchant's reconciliation compares it with its ledger; the processor's view is the one money
- * actually moved by.
+ * every authorization created, captured or voided in [from, to), every refund, and every payout
+ * transfer created, paid, failed or returned. The merchant's reconciliation compares it with its
+ * ledger; the processor's view is the one money actually moved by.
  */
 @RestController
 @RequestMapping("/v1/reports")
@@ -38,6 +40,7 @@ public class SettlementReportController {
 
     private final AuthorizationRepository authorizationRepository;
     private final RefundRepository refundRepository;
+    private final TransferRepository transferRepository;
 
     public record AuthorizationLine(String id, String reference, String status, BigDecimal amount, String currency,
                                     BigDecimal capturedAmount, BigDecimal refundedAmount,
@@ -48,8 +51,14 @@ public class SettlementReportController {
                              LocalDateTime createdAt) {
     }
 
+    public record TransferLine(String id, String reference, String status, BigDecimal amount, String currency,
+                               String failureCode, LocalDateTime createdAt, LocalDateTime paidAt,
+                               LocalDateTime failedAt, LocalDateTime returnedAt) {
+    }
+
     public record SettlementReport(LocalDateTime from, LocalDateTime to,
-                                   List<AuthorizationLine> authorizations, List<RefundLine> refunds) {
+                                   List<AuthorizationLine> authorizations, List<RefundLine> refunds,
+                                   List<TransferLine> transfers) {
     }
 
     @GetMapping("/settlement")
@@ -63,6 +72,7 @@ public class SettlementReportController {
 
         List<Authorization> authorizations = authorizationRepository.findActiveBetween(from, to);
         List<Refund> refunds = refundRepository.findByCreatedAtGreaterThanEqualAndCreatedAtLessThanOrderByCreatedAt(from, to);
+        List<Transfer> transfers = transferRepository.findActiveBetween(from, to);
 
         // refunds of authorizations outside the window still need their reference and currency
         Map<String, Authorization> byId = authorizations.stream().collect(Collectors.toMap(Authorization::getId, Function.identity()));
@@ -77,6 +87,9 @@ public class SettlementReportController {
                     Authorization a = byId.get(r.getAuthorizationId());
                     return new RefundLine(r.getId(), r.getAuthorizationId(), a == null ? null : a.getReference(),
                             r.getAmount(), a == null ? null : a.getCurrency(), r.getCreatedAt());
-                }).toList()));
+                }).toList(),
+                transfers.stream().map(t -> new TransferLine(t.getId(), t.getReference(), t.getStatus().name(),
+                        t.getAmount(), t.getCurrency(), t.getFailureCode(), t.getCreatedAt(), t.getPaidAt(),
+                        t.getFailedAt(), t.getReturnedAt())).toList()));
     }
 }

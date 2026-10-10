@@ -54,4 +54,27 @@ class LedgerCommandParserTest {
         assertThatThrownBy(() -> parser.parse("{\"eventId\":\"" + UUID.randomUUID() + "\"}"))
                 .isInstanceOf(InvalidCommandException.class);
     }
+
+    private static String payoutData(String commandType, String extra) {
+        return "{\"commandId\":\"" + UUID.randomUUID() + "\",\"commandType\":\"" + commandType + "\",\"sagaId\":\"" + UUID.randomUUID()
+                + "\",\"merchantId\":\"" + UUID.randomUUID() + "\",\"amount\":10.00,\"currency\":\"USD\"" + extra + "}";
+    }
+
+    @Test
+    void payoutCommandsCarryAPayoutIdAndHoldsACutoff() {
+        String payoutId = ",\"payoutId\":\"" + UUID.randomUUID() + "\"";
+
+        LedgerCommand hold = parser.parse(message(payoutData("HOLD_PAYOUT", payoutId + ",\"cutoff\":\"2026-10-07T04:00:00\"")));
+        assertThat(hold.getCutoff()).isEqualTo(java.time.LocalDateTime.of(2026, 10, 7, 4, 0));
+        assertThat(hold.subjectId()).isEqualTo(hold.getPayoutId());
+
+        assertThatThrownBy(() -> parser.parse(message(payoutData("HOLD_PAYOUT", payoutId))))
+                .isInstanceOf(InvalidCommandException.class).hasMessageContaining("cutoff missing");
+        assertThatThrownBy(() -> parser.parse(message(payoutData("FINALIZE_PAYOUT", ""))))
+                .isInstanceOf(InvalidCommandException.class).hasMessageContaining("payoutId missing");
+        assertThatThrownBy(() -> parser.parse(message(payoutData("SETTLE_PAYMENT", payoutId))))
+                .isInstanceOf(InvalidCommandException.class)
+                .hasMessageContaining("paymentId missing")
+                .hasMessageContaining("can't carry a payoutId");
+    }
 }
