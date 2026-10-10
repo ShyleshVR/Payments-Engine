@@ -44,7 +44,8 @@ spring:
 # Replies to the saga orchestrator go through a transactional outbox (see OutboxRelay).
 outbox:
   publisher:
-    poll-interval: PT1S
+    # Replies wait for this poll on their way to the saga: kept short for payment latency.
+    poll-interval: PT0.1S
     batch-size: 100
     send-timeout: 15s
     initial-backoff: 1s
@@ -56,8 +57,13 @@ outbox:
 payflow:
   kafka:
     # Partitions of the topics this service creates (ledger-replies and its DLT).
-    partitions: 3
+    partitions: 12
     replication-factor: 1
+    # Consumer threads per pod (see KafkaConsumerConfig); partitions bound a consumer group's
+    # parallelism. The ledger runs 6 (other services 3): its consumers mostly wait on database commits, not CPU, so more of them in
+    # flight let Postgres flush more commits per write (at 200 payments/s, 3 per pod fell behind and
+    # late replies made the orchestrator re-send commands). 2 pods x 6 = the 12 partitions.
+    listener-concurrency: 6
 
 management:
   endpoint:

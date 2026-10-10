@@ -58,6 +58,8 @@ spec:
           args:
             - --config.file=/etc/prometheus/prometheus.yml
             - --storage.tsdb.retention.time=2d
+            # k6 load tests push their metrics here (scripts/load-test.sh), next to the services'.
+            - --web.enable-remote-write-receiver
           ports:
             - containerPort: 9090
           readinessProbe:

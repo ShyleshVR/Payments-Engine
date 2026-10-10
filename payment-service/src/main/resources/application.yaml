@@ -60,8 +60,9 @@ spring:
 
 outbox:
   publisher:
-    # Saga commands travel through the outbox too, so it is polled often.
-    poll-interval: PT0.5S
+    # Saga commands travel through the outbox too, and every hop of a payment waits for one
+    # poll: kept short for latency (the claim query is cheap).
+    poll-interval: PT0.1S
     batch-size: 100
     send-timeout: 15s
     initial-backoff: 1s
@@ -73,8 +74,11 @@ outbox:
 payflow:
   kafka:
     # Topics this service owns are created with these settings (see KafkaTopicsConfig).
-    partitions: 3
+    partitions: 12
     replication-factor: 1
+    # Consumer threads per pod (see KafkaConsumerConfig). Partitions bound the parallelism of a
+    # consumer group: 12 leave room for 4 pods x 3 threads.
+    listener-concurrency: 3
   # The card processor (processor-simulator locally).
   processor:
     base-url: http://localhost:8086
@@ -83,7 +87,7 @@ payflow:
     read-timeout: 5s
   # Payment and refund sagas (see SagaProperties for what each setting means).
   saga:
-    poll-interval: 500ms
+    poll-interval: 100ms
     workers: 8
     max-in-flight: 100
     lease: 30s

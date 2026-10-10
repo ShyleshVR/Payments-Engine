@@ -45,7 +45,7 @@ configMapGenerator:
       - SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI=http://merchant-service:8084/oauth2/jwks
       - SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI=http://localhost
       - PAYFLOW_AUTH_ISSUER=http://localhost
-      - PAYFLOW_KAFKA_PARTITIONS=3
+      - PAYFLOW_KAFKA_PARTITIONS=12
       - PAYFLOW_KAFKA_REPLICATION_FACTOR=1
   - name: postgres-init
     files:
@@ -72,3 +72,4 @@ configMapGenerator:
   - name: grafana-dashboards
     files:
       - ../../infrastructure/docker/grafana/dashboards/payflow-overview.json
+      - ../../infrastructure/docker/grafana/dashboards/payflow-load-test.json

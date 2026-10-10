@@ -126,7 +126,7 @@ every outbox row and continued wherever the work resumes.
 
 - **Uniform messages.** Every message is `{eventId, eventType, occurredAt, data}` with exact
   decimal amounts.
-- **Ordering.** Topics have 3 partitions and are keyed by payment id, so one payment's messages
+- **Ordering.** Topics have 12 partitions and are keyed by payment id, so one payment's messages
   stay in order. The outbox relays also hold a payment's later messages back until its earlier
   ones have been published.
 - **Ownership.** Topics are declared by the service that owns them.
@@ -224,9 +224,10 @@ reconciled the same way: the bank's transfers, the ledger's payout postings and 
 |---|---|
 | Unit | State-machine rules (29 tests: every transition, compensation and timeout), parsers, policies, idempotency fingerprints |
 | Integration (Testcontainers) | Real Postgres, Kafka and Redis: the saga against a stub processor and a stub ledger (15 scenarios), ledger concurrency, the processor's idempotency under 8 concurrent duplicates, the authorization server, the gateway in front of a real upstream |
+| Load (k6 in the cluster) | The highest rate that meets every SLO: 200 payments/s (420 requests/s), Payment → SUCCESS p95 2.2 s, 0 errors; a 30-minute soak and a 2× spike ([LOAD_TEST.md](LOAD_TEST.md)) |
 | Live cluster | Every test card end to end; processor outage under load; ledger scaled to zero; pods force-killed; rolling restarts under traffic; autoscaling under load; a reconciliation of every payment across three databases; a simulated incident in which each alert fired and resolved; injected corruption caught by the daily reconciliation |
 
-433 automated tests run in CI, along with the alert-rule tests. Results of the cluster runs are
+441 automated tests run in CI, along with the alert-rule tests. Results of the cluster runs are
 recorded in [DEPLOYMENT.md](DEPLOYMENT.md#testing), [SAGA.md](SAGA.md#cluster-verification),
 [DEPLOYMENT.md](DEPLOYMENT.md#verified-on-the-cluster) (alerts) and
 [RECONCILIATION.md](RECONCILIATION.md#on-the-cluster).
@@ -240,3 +241,4 @@ recorded in [DEPLOYMENT.md](DEPLOYMENT.md#testing), [SAGA.md](SAGA.md#cluster-ve
 - [PAYOUTS.md](PAYOUTS.md): merchant payouts
 - [RECONCILIATION.md](RECONCILIATION.md): the daily reconciliation
 - [DEPLOYMENT.md](DEPLOYMENT.md): Kubernetes, gateway, alerting and CI
+- [LOAD_TEST.md](LOAD_TEST.md): SLOs, the ceiling, and the bottlenecks found and fixed

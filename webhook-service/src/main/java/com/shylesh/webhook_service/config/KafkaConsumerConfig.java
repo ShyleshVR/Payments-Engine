@@ -5,6 +5,7 @@ import com.shylesh.webhook_service.event.InvalidEventException;
 import lombok.extern.slf4j.Slf4j;
 
 import org.apache.kafka.common.TopicPartition;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
@@ -69,12 +70,16 @@ public class KafkaConsumerConfig {
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory(
             ConsumerFactory<String, String> consumerFactory,
-            DefaultErrorHandler kafkaErrorHandler) {
+            DefaultErrorHandler kafkaErrorHandler,
+            @Value("${payflow.kafka.listener-concurrency:3}") int concurrency) {
 
         var factory = new ConcurrentKafkaListenerContainerFactory<String, String>();
 
         factory.setConsumerFactory(consumerFactory);
         factory.setCommonErrorHandler(kafkaErrorHandler);
+        // consumer threads per pod; each takes some of the topic's partitions (one thread
+        // per partition at most), so one key's messages are still handled in order
+        factory.setConcurrency(concurrency);
         factory.getContainerProperties().setObservationEnabled(true);
 
         return factory;

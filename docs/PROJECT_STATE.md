@@ -12,11 +12,13 @@
 | Sagas | Processor integration (simulator), orchestrated payment and refund sagas, ledger commands, one trace per payment | [SAGA.md](SAGA.md) |
 | Alerting and reconciliation | Prometheus alert rules (promtool-tested) and Alertmanager with runbooks; reconciliation-service: daily three-way reconciliation of processor, ledger and payments | [RECONCILIATION.md](RECONCILIATION.md), [DEPLOYMENT.md](DEPLOYMENT.md#alerting) |
 | Merchant payouts | payout-service: daily batch and instant payouts as sagas, funds availability (payable balance), an asynchronous bank with failures and returns, payout webhooks, payouts in the daily reconciliation, payout alerts | [PAYOUTS.md](PAYOUTS.md) |
+| Load testing | k6 as an in-cluster Job, SLOs as thresholds, a ceiling search; nine bottlenecks fixed (saga reservations, batched outbox relays, an HTTP client executor, more partitions and consumer threads, shorter polls, Kafka 4.2.0, lock-waiting claims, an outbox query plan, queue-table autovacuum): 100 → 200 payments/s | [LOAD_TEST.md](LOAD_TEST.md) |
 
 ## Next candidates
 
-- **Load test with performance targets:** k6 or Gatling against the cluster, p99 latency and
-  sustained throughput, bottlenecks found and fixed.
+- **Past 200 payments/s:** the shared Postgres instance's write-ahead log is the limit. Options:
+  fewer commits per payment (e.g. recording a saga step and claiming the next in one
+  transaction), a database per service, faster storage.
 - **Payout refinements:** fees, multi-currency (FX), negative balances with bank debits, payout
   schedules per merchant.
 - **Engineering cleanup:**

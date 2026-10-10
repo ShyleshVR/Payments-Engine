@@ -1,0 +1,58 @@
+# k6 load test as a one-off Job inside the cluster, against the gateway Service (the same path
+# merchants take, without the host's port forwarding). Rendered and applied by
+# scripts/load-test.sh, which fills in the __PLACEHOLDERS__ and creates the k6-script ConfigMap
+# and the k6-admin Secret. Not part of the deployment overlays.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-load
+  namespace: payflow
+  labels:
+    app: k6-load
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: k6-load
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 12345
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: k6
+          image: grafana/k6:0.54.0
+          args: ["run", "--quiet", "-o", "experimental-prometheus-rw", "--tag", "run=__RUN_ID__", "/scripts/payflow.js"]
+          env:
+            - { name: SCENARIO, value: "__SCENARIO__" }
+            - { name: RATE, value: "__RATE__" }
+            - { name: PEAK, value: "__PEAK__" }
+            - { name: DURATION, value: "__DURATION__" }
+            - { name: MERCHANTS, value: "__MERCHANTS__" }
+            - { name: BASE_URL, value: "http://api-gateway.payflow.svc" }
+            - name: ADMIN_SECRET
+              valueFrom: { secretKeyRef: { name: k6-admin, key: admin-client-secret } }
+            # k6 metrics into the cluster's Prometheus, next to the services' own.
+            - { name: K6_PROMETHEUS_RW_SERVER_URL, value: "http://prometheus.payflow.svc:9090/api/v1/write" }
+            - { name: K6_PROMETHEUS_RW_TREND_STATS, value: "p(95),p(99),avg" }
+            - { name: K6_PROMETHEUS_RW_PUSH_INTERVAL, value: "5s" }
+          # A limited generator: it must not take the CPU the system under test needs.
+          resources:
+            requests: { cpu: 500m, memory: 256Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: scripts
+          configMap: { name: k6-script }
+        - name: tmp
+          emptyDir: {}

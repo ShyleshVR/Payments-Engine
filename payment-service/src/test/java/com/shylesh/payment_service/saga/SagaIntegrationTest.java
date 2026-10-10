@@ -71,7 +71,7 @@ class SagaIntegrationTest {
 
     @Container
     @ServiceConnection
-    static KafkaContainer kafka = new KafkaContainer("apache/kafka:4.0.0");
+    static KafkaContainer kafka = new KafkaContainer("apache/kafka:4.2.0");
 
     @Container
     @ServiceConnection(name = "redis")

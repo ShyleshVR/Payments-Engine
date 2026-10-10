@@ -19,6 +19,9 @@ import org.springframework.web.client.RestClient;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.http.HttpClient;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -43,8 +46,13 @@ public class ProcessorClient {
     public ProcessorClient(RestClient.Builder restClientBuilder, ProcessorProperties properties,
                            CircuitBreakerRegistry circuitBreakerRegistry, ObjectMapper objectMapper,
                            MeterRegistry meterRegistry) {
-        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(
-                HttpClient.newBuilder().connectTimeout(properties.connectTimeout()).build());
+        // The client gets an executor of its own: without one, Spring writes every request body on
+        // a new thread (SimpleAsyncTaskExecutor), and under load creating those threads cost more
+        // CPU than the rest of the saga's work.
+        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(HttpClient.newBuilder()
+                .connectTimeout(properties.connectTimeout())
+                .executor(httpExecutor())
+                .build());
         requestFactory.setReadTimeout(properties.readTimeout());
         this.restClient = restClientBuilder
                 .baseUrl(properties.baseUrl())
@@ -54,6 +62,16 @@ public class ProcessorClient {
         this.circuitBreaker = circuitBreakerRegistry.circuitBreaker("processor");
         this.objectMapper = objectMapper;
         this.meterRegistry = meterRegistry;
+    }
+
+    /** Reused threads for the HTTP client's work (idle ones are dropped after a minute). */
+    static ExecutorService httpExecutor() {
+        AtomicInteger counter = new AtomicInteger();
+        return Executors.newCachedThreadPool(runnable -> {
+            Thread thread = new Thread(runnable, "processor-http-" + counter.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     public ProcessorResponse authorize(String idempotencyKey, String paymentMethod, BigDecimal amount,
@@ -67,7 +85,7 @@ public class ProcessorClient {
     }
 
     public ProcessorResponse capture(String idempotencyKey, String authorizationId) {
-        return call("capture", () -> post("/v1/authorizations/" + authorizationId + "/capture", idempotencyKey, null));
+        return call("capture", () -> post("/v1/authorizations/{id}/capture", idempotencyKey, null, authorizationId));
     }
 
     /**
@@ -108,10 +126,11 @@ public class ProcessorClient {
         return response;
     }
 
-    private ProcessorResponse post(String path, String idempotencyKey, Object body) {
+    /** uriTemplate with {placeholders}: metrics tag requests by the template, not by each id. */
+    private ProcessorResponse post(String uriTemplate, String idempotencyKey, Object body, Object... uriVariables) {
         try {
             RestClient.RequestBodySpec spec = restClient.post()
-                    .uri(path)
+                    .uri(uriTemplate, uriVariables)
                     .header("Idempotency-Key", idempotencyKey)
                     .contentType(MediaType.APPLICATION_JSON);
             if (body != null) {
