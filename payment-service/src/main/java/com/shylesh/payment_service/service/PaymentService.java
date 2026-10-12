@@ -3,6 +3,7 @@ package com.shylesh.payment_service.service;
 import com.shylesh.payment_service.dto.CreatePaymentRequest;
 import com.shylesh.payment_service.dto.PaymentAuditView;
 import com.shylesh.payment_service.dto.PaymentResponse;
+import com.shylesh.payment_service.dto.SagaAttentionResponse;
 import com.shylesh.payment_service.dto.SagaResponse;
 
 import java.util.List;
@@ -31,4 +32,7 @@ public interface PaymentService {
 
     /** Audit: any payments by id (unknown ids are left out). */
     List<PaymentAuditView> lookupPayments(List<UUID> paymentIds);
+
+    /** Parked sagas, and running ones in the same step for longer than stuckAfterMinutes; at most limit of each. */
+    SagaAttentionResponse sagasNeedingAttention(int stuckAfterMinutes, int limit);
 }

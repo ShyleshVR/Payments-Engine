@@ -48,6 +48,12 @@ payflow:
     payout-hold-stale-after: 4d
     # a payout returned by the bank may wait this long for the payout saga to book it
     payout-return-grace: 2h
+    # A day is read from the sources a page at a time into a staging table, then reconciled a
+    # chunk of payments at a time: memory does not grow with the day (docs/RECONCILIATION.md).
+    page-size: 1000
+    chunk-size: 2000
+    # a RUNNING run silent for this long was killed: the next attempt takes its day over
+    abandoned-after: 5m
     processor:
       base-url: http://localhost:8086
       api-key: ${PAYFLOW_PROCESSOR_API_KEY:local-dev-processor-key}

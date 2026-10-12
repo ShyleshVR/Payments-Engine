@@ -34,6 +34,7 @@ class StubLedger implements AutoCloseable {
     private final KafkaProducer<String, String> producer;
     private final List<Command> commands = new CopyOnWriteArrayList<>();
     private volatile boolean running = true;
+    private volatile boolean silent;
     /** command -> {outcome, reason}; default SUCCEEDED */
     private volatile Function<Command, String[]> decider = command -> new String[]{"SUCCEEDED", null};
 
@@ -58,6 +59,15 @@ class StubLedger implements AutoCloseable {
         this.decider = decider;
     }
 
+    /** Commands are still recorded, but get no reply (the saga re-sends them after its timeout). */
+    void pauseReplies() {
+        silent = true;
+    }
+
+    void resumeReplies() {
+        silent = false;
+    }
+
     void alwaysSucceed() {
         decideWith(command -> new String[]{"SUCCEEDED", null});
     }
@@ -79,6 +89,9 @@ class StubLedger implements AutoCloseable {
                             UUID.fromString(data.get("sagaId").asText()), UUID.fromString(data.get("payoutId").asText()),
                             data.hasNonNull("cutoff") ? data.get("cutoff").asText() : null);
                     commands.add(command);
+                    if (silent) {
+                        continue;
+                    }
                     String[] decision = decider.apply(command);
                     String reply = "{\"commandId\":\"" + command.commandId() + "\",\"commandType\":\"" + command.commandType()
                             + "\",\"sagaId\":\"" + command.sagaId() + "\",\"paymentId\":null,\"payoutId\":\"" + command.payoutId()

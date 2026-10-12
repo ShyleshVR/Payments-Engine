@@ -16,10 +16,12 @@ because the processor's records, not your own, decide what customers were charge
 
 ```
 02:00 UTC ─▶ reconciliation-service (one replica, ShedLock)
-              ├─ GET  processor  /v1/reports/settlement?from&to     (API key)
-              ├─ GET  ledger     /api/v1/ledger/transactions        (OAuth2: its own client)
-              ├─ GET  ledger     /api/v1/ledger/refund-holds/open
-              └─ POST payment    /api/v1/payments/lookup
+              ├─ GET  processor  /v1/reports/settlement/…           (API key; a page at a time)
+              └─ GET  ledger     /api/v1/ledger/transactions        (OAuth2: its own client; a page at a time)
+              ▼
+          staging table (the day's records)
+              ▼  2000 payments at a time
+              ├─ POST payment    /api/v1/payments/lookup
               ▼
           Reconciler (pure function) ─▶ reconciliation_run + reconciliation_discrepancy
               ▼
@@ -33,13 +35,14 @@ because the processor's records, not your own, decide what customers were charge
 3. [Matching window](#matching-window)
 4. [Scheduling](#scheduling)
 5. [Reading the sources](#reading-the-sources)
-6. [Operator API](#operator-api)
-7. [Metrics and alerts](#metrics-and-alerts)
-8. [Runbook](#runbook)
-9. [Configuration](#configuration)
-10. [Design decisions](#design-decisions)
-11. [Payouts](#payouts)
-12. [Testing](#testing)
+6. [Large days](#large-days)
+7. [Operator API](#operator-api)
+8. [Metrics and alerts](#metrics-and-alerts)
+9. [Runbook](#runbook)
+10. [Configuration](#configuration)
+11. [Design decisions](#design-decisions)
+12. [Payouts](#payouts)
+13. [Testing](#testing)
 
 ---
 
@@ -97,12 +100,20 @@ scheduler reconciles a day only once the margin after it has passed.
   missed while the service was down, or one that failed because a source was unavailable. It
   also runs a minute after startup.
 - **One runner:** every replica schedules both jobs; a ShedLock row in Postgres (`shedlock`
-  table, database clock) lets one replica at a time run them.
+  table, database clock) lets one replica at a time run them. The lock lasts 10 minutes at
+  most, and a run renews it at every heartbeat, so it covers a run of any length and is free
+  again within 10 minutes of a pod being killed.
 - **One run per day:** the scheduler never re-runs a day that has a completed run, and a partial
   unique index allows only one *running* run per day, even between a scheduled and a manual run.
   Tested: two "replicas" running the catch-up at the same moment produce exactly one run per day.
 - **Manual runs** through the API are always allowed. They're for re-checking a day after fixing
   something: a day's latest completed run is what the metrics and alerts reflect for that day.
+- **A run that dies:** a run records a heartbeat while it works (`heartbeat_at`, every
+  30 seconds or so). A run still `RUNNING` but silent for 5 minutes (`abandoned-after`) belonged to a
+  pod that was killed: the next attempt at that day marks it `FAILED` ("Abandoned…"), deletes
+  what it left behind and runs. A run that is still reporting keeps its day (`409`). If a run
+  that was only stalled wakes up after being taken over, it notices at its next heartbeat and
+  stops without writing a result.
 
 A source that can't be read fails the run (status `FAILED`, error recorded). It never produces
 a partial result, which would show up as false discrepancies.
@@ -114,25 +125,122 @@ processor:
 
 | Source | Endpoint | Auth |
 |---|---|---|
-| Processor settlement report | `GET /v1/reports/settlement?from&to`: every authorization created, captured or voided in the period (with `captured_at` / `voided_at`), and every refund | `X-Api-Key` |
-| Ledger transactions | `GET /api/v1/ledger/transactions?from&to&page&size`: pages of up to 1000 | scope `ledger:admin` |
+| Processor settlement report | `GET /v1/reports/settlement/authorizations?from&to&after&limit`: every authorization created, captured or voided in the period (with `captured_at` / `voided_at`), each once. `…/refunds` and `…/transfers` the same way. Pages of up to 1000 | `X-Api-Key` |
+| Ledger transactions | `GET /api/v1/ledger/transactions?from&to&after&size`: pages of up to 1000 | scope `ledger:admin` |
 | Open refund holds | `GET /api/v1/ledger/refund-holds/open?createdBefore` | scope `ledger:admin` |
 | Payment statuses | `POST /api/v1/payments/lookup {paymentIds}`: batches of up to 1000, including whether a saga is still running | scope `payments:audit` (new, read-only) |
+
+The paged endpoints answer `{"items": […], "next": "…"}`. `next` is sent back as `after` to get
+the following page; `null` means the period is complete. The cursor is opaque to the caller. It
+says where the previous page ended (the last row's time and id), so the next page is an index
+range scan that starts there: every page costs the same, however far into the day it is. Page
+numbers (`OFFSET`) would make each page slower than the one before. A cursor from another
+period, or one that isn't ours, is refused with `400`.
 
 The service has its own OAuth2 client, `reconciliation-service`, registered by merchant-service
 from configuration (`payflow.auth.service-clients`). It holds only `ledger:admin` and
 `payments:audit`, both read-only; service clients can never be given merchant scopes. Tokens
 are fetched and renewed automatically (Spring Security's client-credentials support).
 
+## Large days
+
+A run never holds a day in memory, and neither do its sources. It used to, and that failed on
+the first large day.
+
+**What went wrong.** The load test left a day with 2,750,997 payments (2026-10-10). The
+processor's report was a single request for the whole day. The processor loaded every
+authorization into its 604 MB heap, ran out of memory and was killed. The run failed, the hourly
+catch-up retried, and a processor pod died every hour. `ReconciliationRunFailed` and
+`ReconciliationNotRun` fired, which is how it was found. Three more problems sat behind it:
+
+- reconciliation-service would have held the whole day in its own heap too;
+- the ledger's listing had no index on `created_at` and was paged by page number, so every
+  page scanned more than the one before;
+- a run whose pod died stayed `RUNNING` and blocked its day for ever.
+
+**How a run works now**
+
+1. **Stage.** The day's records (matching window included) are read from the processor and the
+   ledger a page of 1000 at a time and written to the table `reconciliation_staging`: one row
+   per record, the record as JSON, under the payment or payout it belongs to.
+2. **Payments, in chunks.** The staged payment ids are walked in order, 2000 at a time. For
+   each chunk, everything staged for those payments is loaded, the payments are looked up in
+   payment-service, and the unchanged `Reconciler` runs on that chunk. Its counts are added to
+   the run's and its discrepancies are stored.
+3. **Payouts, in chunks,** the same way.
+4. **Open holds** are checked once: they don't depend on the day's records.
+5. The run completes with the summed counts, and its staged rows are deleted (also when it
+   fails).
+
+Every payment is in exactly one chunk, with all its records, so the chunks add up to the day.
+That is why the chunks are by payment and not by time. An hour's slice would need the one-hour
+margin on both sides, and a payment captured in one slice and refunded in another would be
+counted twice.
+
+The staging table is `UNLOGGED`: its rows are disposable, so they skip the write-ahead log.
+After a Postgres crash it comes back empty, and the interrupted run is retried anyway.
+
+**Measured on the cluster.** The real 2026-10-10, reconciled by the scheduled catch-up one
+minute after the fix was deployed. Each pod has a 604 MB heap.
+
+| | Before | After |
+|---|---|---|
+| Result | `FAILED` every hour, a processor pod OOM-killed each time | `COMPLETED`: 2,750,997 payments checked, 2,750,997 matched, 0 pending; 2 payouts matched; 0 discrepancies |
+| Duration | – | 30 min 55 s: about 4 min to stage 5,578,343 records, 27 min for 1,376 chunks |
+| Peak heap, processor-simulator | over 604 MB (killed) | 110 MB |
+| Peak heap, reconciliation-service | – | 95 MB |
+| Peak heap, ledger-service and payment-service | – | 89 MB and 92 MB |
+| Pod restarts during the run | one per attempt | 0 |
+| Staging table | – | 2.1 GB at its peak, 0 rows afterwards |
+| A page of the processor report, deep in the day | – | about 5 ms, the same as the first page (an index range scan) |
+| A page of the ledger listing | a scan and sort of 2.7M rows | an index scan on the new `(created_at, id)` index, no sort |
+
+**A killed run, on the cluster.** A manual run of the same day was started and its pod was
+force-deleted 33 seconds in, with 1.7 million rows staged.
+
+| Step | Result |
+|---|---|
+| The pod is killed while staging | The run stays `RUNNING`; its last heartbeat was at 13:54:37 |
+| A new attempt 20 seconds later | `409`: the run still counts as alive |
+| A new attempt 5 min 15 s after the last heartbeat | The dead run is marked `FAILED` ("Abandoned…"), its 1,879,000 staged rows are deleted, and a new run starts |
+| That run | `COMPLETED` in 30 min 27 s with the same result: 2,750,997 checked, 2,750,997 matched, 0 discrepancies |
+| Small days afterwards (2026-10-08, -09, -11) | 954 payments and 9 payouts matched, 0 discrepancies, under 2 s each |
+| Alerts | `ReconciliationRunFailed` and `ReconciliationNotRun` resolved after the first completed run |
+
+One more problem showed up in these runs and was fixed. Right after the big run, a small day
+took 8 to 19 seconds: two clean-up statements read the whole staging table, which was still
+1.9 GB of deleted rows waiting for autovacuum. They now go through the indexes. Autovacuum
+returned the file to 0 bytes three and a half minutes after the run.
+
+**Limits**
+
+- **The chunk phase is the slow part.** Staged rows lie in the order they arrived, and a chunk
+  reads them by payment id, so each row is a random read from a 2.1 GB table in a Postgres
+  with 1 GB of memory (about 0.75 s a chunk, plus 0.4 s for its two payment lookups). Fine
+  for a nightly job. If it mattered: write the staged rows sorted by payment once, or give
+  Postgres the memory to cache them.
+- **A manual run answers when it ends.** For a day this size the gateway gives up after 30 s
+  (`504`) while the run carries on; read it with `GET /api/v1/reconciliation/runs?date=…`.
+- **After a pod is killed mid-run, the scheduler waits for its next tick.** The lock is free
+  within 10 minutes and the day can be taken over after 5, but the catch-up runs hourly (and a
+  minute after a pod starts, when the lock may still be held). A manual run can take the day
+  over as soon as the 5 minutes have passed.
+- **Open holds are still one list,** and the ledger's query for them looks at every hold it
+  ever made: 1.5 s after the load test's 25,000 refunds. It runs once per run. To stay flat it
+  would need an index over the holds that are still open.
+- **Staged rows are deleted, not truncated** (another day's run may be using the table). The
+  file shrinks when autovacuum next runs; two large runs back to back reuse the space.
+
 ## Operator API
 
-Through the gateway, scope `reconciliation:admin` (granted to the operator client):
+Through the gateway. Reading needs `reconciliation:admin` (the operator client) or the read-only
+`reconciliation:audit`; starting a run needs `reconciliation:admin`.
 
-| | |
-|---|---|
-| `GET /api/v1/reconciliation/runs?date=2026-10-08` | That day's runs, newest first (without `date`: the 20 most recent) |
-| `GET /api/v1/reconciliation/runs/{id}` | A run with its discrepancies |
-| `POST /api/v1/reconciliation/runs {"date":"2026-10-08"}` | Reconcile a day now. `201` with the result; `409` if that day is being reconciled; `400` for a future day |
+| | | Scope |
+|---|---|---|
+| `GET /api/v1/reconciliation/runs?date=2026-10-08` | That day's runs, newest first (without `date`: the 20 most recent) | admin or audit |
+| `GET /api/v1/reconciliation/runs/{id}` | A run with its discrepancies | admin or audit |
+| `POST /api/v1/reconciliation/runs {"date":"2026-10-08"}` | Reconcile a day now. `201` with the result; `409` if that day is being reconciled; `400` for a future day | admin |
 
 ```json
 {"run": {"businessDate": "2026-10-08", "trigger": "SCHEDULED", "status": "COMPLETED",
@@ -196,6 +304,9 @@ re-run clean, or after 7 days, by which time it has been paged on for a week.
 | `matching-margin` | 1h | Window around the day; a day closes this long after midnight |
 | `authorization-grace` | 1h | How long a failed payment's authorization may stay open |
 | `refund-hold-stale-after` | 1h | How long a refund hold may stay open |
+| `page-size` | 1000 | Records asked of the processor and the ledger per request (they cap it at 1000) |
+| `chunk-size` | 2000 | Payments (or payouts) reconciled at a time: what a run holds in memory |
+| `abandoned-after` | 5m | A `RUNNING` run silent for this long is taken over by the next attempt |
 | `processor.base-url` / `api-key`, `ledger.base-url`, `payments.base-url` | localhost | Sources |
 
 The OAuth2 client is `spring.security.oauth2.client.registration.payflow` (client id
@@ -212,9 +323,13 @@ merchant-service).
 | Facts checked on the day they happened, matched within a window | No false alarms across midnight, nothing checked twice | A day is reconciled only after the margin has passed |
 | Fail the run if a source is unreadable | A partial snapshot would look like discrepancies | A failed run must be retried (automatic, hourly) |
 | ShedLock + idempotency per day + unique running run | Exactly one reconciliation per day across replicas | — |
+| A short scheduler lock, renewed by the run's heartbeat | A lock sized for the longest run (hours) would outlive a killed pod by as long | The run and the lock are tied together by a callback |
 | In-flight payments reported as pending | Avoids false alarms for payments mid-saga | A payment stuck all night is skipped here (it has its own alert) |
 | Pre-processor payments out of scope, flagged per payment | They have no processor record by design; the flag comes from the data (no payment method), not a cut-over date to configure | They are not reconciled at all (their ledger postings still balance) |
 | Alert on each recent day's latest run | A clean day reconciled later can't hide a bad one | Resolving needs a clean re-run of that day |
+| Stage the day in a table, reconcile it in chunks of payments | Memory no longer grows with the day; the rules and their tests are unchanged | A run writes the day once more (an unlogged table, emptied after the run) |
+| Cursor paging in the processor report and the ledger listing | Every page is one index range scan; a day of millions of rows is read at a constant rate | The old one-request report is gone: callers must follow cursors |
+| A heartbeat on the run; a silent run is taken over | A killed pod no longer blocks its day for ever | A stalled (not dead) run can be ended wrongly; it then stops itself at its next heartbeat |
 
 ## Payouts
 
@@ -256,10 +371,11 @@ counts separately (`payoutsChecked`, `payoutsMatched`, `payoutsPending`); discre
   - pre-processor payments are left out;
   - stale vs fresh holds.
 - **Integration (10 tests, Postgres in Testcontainers, a stub HTTP server for the token endpoint
-  and all three sources):**
+  and all the sources, serving real pages and cursors):**
   - a manual run finds the expected discrepancies;
   - the sources are called with the right credentials (client-credentials token, Bearer on the
-    ledger and payment calls, API key on the processor, the matching window, both ledger pages);
+    ledger and payment calls, API key on the processor, the matching window), and each page
+    is asked for with the cursor the page before it gave;
   - metrics reflect the latest run, and a day keeps alerting until it is re-run clean, whatever
     days are reconciled after it;
   - a partial capture is compared by the amount actually captured;
@@ -268,9 +384,23 @@ counts separately (`payoutsChecked`, `payoutsMatched`, `payoutsPending`); discre
   - an unreadable source fails the run;
   - two concurrent "replicas" reconcile each finished day exactly once;
   - API security, future dates, and a 409 for a day already running.
+- **Large days (8 tests, same setup, 3 records a page and 2 payments a chunk):**
+  - a day of 28 payments and 5 payouts with 16 known discrepancies, read in 10 and 11 pages
+    and reconciled in 14 chunks, gives exactly those counts and discrepancies; every payment
+    is looked up in exactly one chunk;
+  - a run that fails halfway keeps no staged rows and no discrepancies, and the day reconciles
+    once the source is back;
+  - a run silent for 10 minutes is taken over; one heard from a second ago keeps its day;
+  - the scheduler's lock is pushed further out while a scheduled run works, and given back
+    when it ends;
+  - a run that is taken over while it works stops without writing a result;
+  - staged records come back unchanged, in the source's order, for a range of payments or
+    payouts; rows left by runs that are over are deleted, those of a run at work are kept.
 - **Sources:**
-  - the processor report (captures, voids, refunds, bounded periods);
-  - ledger transaction pages and open holds;
+  - the processor report: an authorization created, captured or voided in the period is
+    listed exactly once across pages; rows with the same timestamp survive a page boundary;
+    the page size is capped; a foreign cursor is refused; the unpaged report is gone;
+  - ledger transaction pages (each transaction once, ties included) and open holds;
   - the payment lookup (scopes, the saga-running flag);
   - service clients in merchant-service (scopes limited, merchant scopes rejected, a real token
     issued).

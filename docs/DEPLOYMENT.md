@@ -307,7 +307,7 @@ Nothing in the code knows it is running in Kubernetes: the same jars run locally
 | Secret | Keys | Used by |
 |---|---|---|
 | `payflow-db` | `postgres-password`, `<service>-password` × 8 | Postgres init script and each service's datasource |
-| `payflow-auth` | `admin-client-secret`, `grafana-admin-password`, `processor-api-key`, `reconciliation-client-secret`, `payout-client-secret` | merchant-service bootstrap admin client, Grafana, payment-, payout- and reconciliation-service → processor-simulator, the reconciliation's and payout-service's OAuth2 clients |
+| `payflow-auth` | `admin-client-secret`, `grafana-admin-password`, `processor-api-key`, `reconciliation-client-secret`, `payout-client-secret`, `incident-agent-client-secret` | merchant-service bootstrap admin client, Grafana, payment-, payout- and reconciliation-service → processor-simulator, the reconciliation's and payout-service's OAuth2 clients |
 | `payflow-signing-key` | `signing-key.pem` (RSA 2048, PKCS#8) | merchant-service |
 
 The passwords are random, and the script never changes an existing value (keys added in later
@@ -531,15 +531,15 @@ its pom excludes it.
 
 | Module | Tests | Notes |
 |---|---|---|
-| payment-service | 80 | including the saga scenarios (see SAGA.md) and the audit lookup |
-| ledger-service | 38 | including the audit endpoints, outbox gauges and payout commands |
+| payment-service | 91 | including the saga scenarios (see SAGA.md) and the audit lookup |
+| ledger-service | 39 | including the audit endpoints (cursor-paged), outbox gauges and payout commands |
 | notification-service | 34 | context-load test excluded |
 | webhook-service | 128 | including payout webhooks |
-| merchant-service | 32 | including `PemFileJwkSourceTest` and `PemSigningKeyIntegrationTest` (Testcontainers): the PEM key signs, its thumbprint is the `kid`, no database key is created; and the configured service clients |
+| merchant-service | 33 | including `PemFileJwkSourceTest` and `PemSigningKeyIntegrationTest` (Testcontainers): the PEM key signs, its thumbprint is the `kid`, no database key is created; and the configured service clients |
 | api-gateway | 17 | see below |
-| processor-simulator | 27 | including the settlement report and bank transfers |
-| reconciliation-service | 41 | see [RECONCILIATION.md](RECONCILIATION.md#testing) |
-| payout-service | 36 | see [PAYOUTS.md](PAYOUTS.md#testing) |
+| processor-simulator | 33 | including the paged settlement report and bank transfers |
+| reconciliation-service | 50 | see [RECONCILIATION.md](RECONCILIATION.md#testing) |
+| payout-service | 38 | see [PAYOUTS.md](PAYOUTS.md#testing) |
 | alert rules | every rule | `promtool test rules alerts.test.yml`; `amtool check-config` on both Alertmanager configurations |
 
 The api-gateway tests run the real gateway (routes, security, rate limiter on a Redis

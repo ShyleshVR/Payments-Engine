@@ -9,8 +9,7 @@ import com.shylesh.ledger_service.service.LedgerQueryService;
 
 import lombok.RequiredArgsConstructor;
 
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Slice;
+import org.springframework.data.domain.Limit;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,21 +45,33 @@ public class LedgerAuditController {
     private final LedgerTransactionRepository transactionRepository;
     private final LedgerQueryService queryService;
 
-    /** Transactions created in [from, to), oldest first, a page at a time. */
+    /**
+     * Transactions created in [from, to), oldest first, a page at a time. A page's "next" is sent
+     * back as "after" for the following page; null means the period is complete. (Page numbers
+     * would make each page cost more than the one before: a busy day has millions of rows.)
+     */
     @GetMapping("/transactions")
     @Transactional(readOnly = true)
     public LedgerTransactionPage transactions(@RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime from,
                                               @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
-                                              @RequestParam(defaultValue = "0") int page,
+                                              @RequestParam(required = false) String after,
                                               @RequestParam(defaultValue = "500") int size) {
         if (!to.isAfter(from) || Duration.between(from, to).compareTo(MAX_PERIOD) > 0) {
             throw new ResponseStatusException(BAD_REQUEST, "to must be after from, at most " + MAX_PERIOD.toDays() + " days later");
         }
-        if (page < 0 || size < 1 || size > MAX_PAGE_SIZE) {
-            throw new ResponseStatusException(BAD_REQUEST, "page >= 0 and 1 <= size <= " + MAX_PAGE_SIZE);
+        if (size < 1 || size > MAX_PAGE_SIZE) {
+            throw new ResponseStatusException(BAD_REQUEST, "1 <= size <= " + MAX_PAGE_SIZE);
         }
-        Slice<LedgerTransactionSummary> slice = transactionRepository.findSummariesBetween(from, to, PageRequest.of(page, size));
-        return new LedgerTransactionPage(slice.getContent(), page, size, slice.hasNext());
+        AuditCursor cursor;
+        try {
+            cursor = after == null ? AuditCursor.startOf(from) : AuditCursor.decode(after, from, to);
+        } catch (AuditCursor.Invalid e) {
+            throw new ResponseStatusException(BAD_REQUEST, "after must be the next value of the previous page of the same period");
+        }
+        List<LedgerTransactionSummary> items = transactionRepository.findSummariesAfter(to, cursor.time(), cursor.id(), Limit.of(size));
+        String next = items.size() < size ? null
+                : new AuditCursor(items.getLast().createdAt(), items.getLast().transactionId()).encode();
+        return new LedgerTransactionPage(items, size, next);
     }
 
     /** Refund holds created before the cutoff that were neither released nor finalized. */

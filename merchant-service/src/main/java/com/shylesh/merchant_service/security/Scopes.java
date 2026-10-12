@@ -23,6 +23,8 @@ public final class Scopes {
     public static final String PAYMENTS_AUDIT = "payments:audit";
     /** Reconciliation runs and reports. */
     public static final String RECONCILIATION_ADMIN = "reconciliation:admin";
+    /** Read-only: reconciliation runs and their discrepancies (not starting a run). */
+    public static final String RECONCILIATION_AUDIT = "reconciliation:audit";
     /** Payout batches, any payout, parked payout sagas. */
     public static final String PAYOUTS_OPERATE = "payouts:operate";
     /** Read-only: any payout (reconciliation). */
@@ -35,7 +37,7 @@ public final class Scopes {
 
     /** What a configured service client may be granted: operator-level scopes, never merchant ones. */
     public static final Set<String> SERVICE_ASSIGNABLE = Set.of(PAYMENTS_OPERATE, PAYMENTS_AUDIT, LEDGER_ADMIN, RECONCILIATION_ADMIN,
-            PAYOUTS_OPERATE, PAYOUTS_AUDIT);
+            RECONCILIATION_AUDIT, PAYOUTS_OPERATE, PAYOUTS_AUDIT);
 
     /** JWT claim carrying the merchant a token acts for. Absent on operator tokens. */
     public static final String MERCHANT_ID_CLAIM = "merchant_id";

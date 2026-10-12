@@ -63,6 +63,45 @@ public interface PayoutSagaRepository extends JpaRepository<PayoutSaga, UUID> {
             """)
     LocalDateTime findOldestStepStartInProgress();
 
+    // The four queries below read only unfinished sagas, a small set next to the finished ones.
+
+    /** Parked for an operator, longest first. */
+    @Query("""
+            SELECT s FROM PayoutSaga s
+            WHERE s.finishedAt IS NULL AND s.state = com.shylesh.payout_service.saga.SagaState.REQUIRES_ATTENTION
+            ORDER BY s.stepStartedAt
+            """)
+    List<PayoutSaga> findParked(Limit limit);
+
+    @Query("""
+            SELECT COUNT(s) FROM PayoutSaga s
+            WHERE s.finishedAt IS NULL AND s.state = com.shylesh.payout_service.saga.SagaState.REQUIRES_ATTENTION
+            """)
+    long countParked();
+
+    /**
+     * Running sagas whose current step started before the given time, oldest first. As for the
+     * oldest-step gauge, steps that wait on the bank by design (in transit, return window) don't count.
+     */
+    @Query("""
+            SELECT s FROM PayoutSaga s
+            WHERE s.finishedAt IS NULL AND s.stepStartedAt < :before
+              AND s.state NOT IN (com.shylesh.payout_service.saga.SagaState.IN_TRANSIT,
+                                  com.shylesh.payout_service.saga.SagaState.RETURN_WINDOW,
+                                  com.shylesh.payout_service.saga.SagaState.REQUIRES_ATTENTION)
+            ORDER BY s.stepStartedAt
+            """)
+    List<PayoutSaga> findInStepSince(@Param("before") LocalDateTime before, Limit limit);
+
+    @Query("""
+            SELECT COUNT(s) FROM PayoutSaga s
+            WHERE s.finishedAt IS NULL AND s.stepStartedAt < :before
+              AND s.state NOT IN (com.shylesh.payout_service.saga.SagaState.IN_TRANSIT,
+                                  com.shylesh.payout_service.saga.SagaState.RETURN_WINDOW,
+                                  com.shylesh.payout_service.saga.SagaState.REQUIRES_ATTENTION)
+            """)
+    long countInStepSince(@Param("before") LocalDateTime before);
+
     /**
      * Payouts whose money movements may still be incomplete: an active saga outside the return
      * window (there, everything is booked; only a return could still come).

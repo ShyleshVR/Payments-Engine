@@ -67,6 +67,21 @@ class MerchantRegisteredClientRepositoryTest {
     }
 
     @Test
+    void aReadOnlyClientCanBeGivenTheAuditScopesAndNothingElse() {
+        // the incident agent, as application.yaml configures it
+        MerchantRegisteredClientRepository withAgent = new MerchantRegisteredClientRepository(credentialRepository, merchantRepository,
+                withServiceClient(new AuthProperties.ServiceClient("incident-agent", "agent-secret",
+                        java.util.Set.of("payments:audit", "payouts:audit", "reconciliation:audit"))), passwordEncoder);
+
+        RegisteredClient client = withAgent.findByClientId("incident-agent");
+
+        assertThat(client.getScopes()).containsExactlyInAnyOrder("payments:audit", "payouts:audit", "reconciliation:audit");
+        assertThat(client.getScopes()).doesNotContain("payments:operate", "payouts:operate", "reconciliation:admin");
+        // an operator token is not an audit token: the read scope is its own grant
+        assertThat(Scopes.ADMIN).doesNotContain(Scopes.RECONCILIATION_AUDIT);
+    }
+
+    @Test
     void serviceClientWithoutASecretIsNotRegistered() {
         assertThat(repository.findByClientId("not-deployed")).isNull();
     }

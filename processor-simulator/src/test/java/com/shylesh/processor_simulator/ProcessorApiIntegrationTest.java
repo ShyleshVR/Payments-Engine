@@ -12,6 +12,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -56,6 +57,9 @@ class ProcessorApiIntegrationTest {
     @Autowired
     private AuthorizationRepository authorizationRepository;
 
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
     @AfterEach
     void endOutage() throws Exception {
         mockMvc.perform(post("/v1/test/outage").param("seconds", "0").header("X-Api-Key", "test-key"));
@@ -97,6 +101,28 @@ class ProcessorApiIntegrationTest {
 
     private static String key() {
         return "test-" + UUID.randomUUID();
+    }
+
+    /** Every item of one settlement report list, read page by page as a client would. */
+    private List<JsonNode> report(String list, String from, String to, int limit) throws Exception {
+        List<JsonNode> items = new ArrayList<>();
+        String after = null;
+        do {
+            var request = get("/v1/reports/settlement/" + list).header("X-Api-Key", "test-key")
+                    .param("from", from).param("to", to).param("limit", String.valueOf(limit));
+            if (after != null) {
+                request.param("after", after);
+            }
+            JsonNode page = objectMapper.readTree(mockMvc.perform(request).andReturn().getResponse().getContentAsString());
+            assertThat(page.get("items").size()).isLessThanOrEqualTo(limit);
+            page.get("items").forEach(items::add);
+            after = page.get("next").isNull() ? null : page.get("next").asText();
+        } while (after != null);
+        return items;
+    }
+
+    private static List<String> ids(List<JsonNode> items) {
+        return items.stream().map(item -> item.get("id").asText()).toList();
     }
 
     @Test
@@ -314,12 +340,8 @@ class ProcessorApiIntegrationTest {
         String from = java.time.LocalDateTime.now().minusHours(1).toString();
         String to = java.time.LocalDateTime.now().plusHours(1).toString();
 
-        JsonNode report = objectMapper.readTree(mockMvc.perform(get("/v1/reports/settlement")
-                        .param("from", from).param("to", to).header("X-Api-Key", "test-key"))
-                .andReturn().getResponse().getContentAsString());
-
         java.util.Map<String, JsonNode> byId = new java.util.HashMap<>();
-        report.get("authorizations").forEach(a -> byId.put(a.get("id").asText(), a));
+        report("authorizations", from, to, 1000).forEach(a -> byId.put(a.get("id").asText(), a));
         assertThat(byId.get(captured).get("status").asText()).isEqualTo("CAPTURED");
         assertThat(byId.get(captured).get("capturedAt").isNull()).isFalse();
         assertThat(byId.get(captured).get("reference").asText()).isEqualTo("pay_test");
@@ -327,7 +349,7 @@ class ProcessorApiIntegrationTest {
         assertThat(byId.get(voided).get("voidedAt").isNull()).isFalse();
         assertThat(byId.get(refunded).get("refundedAmount").decimalValue()).isEqualByComparingTo("30.00");
         JsonNode refund = null;
-        for (JsonNode r : report.get("refunds")) {
+        for (JsonNode r : report("refunds", from, to, 1000)) {
             if (r.get("authorizationId").asText().equals(refunded)) {
                 refund = r;
             }
@@ -338,16 +360,131 @@ class ProcessorApiIntegrationTest {
     }
 
     @Test
-    void settlementReportRejectsAnInvalidPeriod() throws Exception {
-        int reversed = mockMvc.perform(get("/v1/reports/settlement").header("X-Api-Key", "test-key")
-                        .param("from", "2026-10-09T00:00:00").param("to", "2026-10-08T00:00:00"))
+    void anAuthorizationCreatedCapturedOrVoidedInThePeriodIsListedExactlyOnceAcrossPages() throws Exception {
+        // before the period: one captured in it, one voided in it, one untouched
+        String capturedLater = authorized("pm_card_visa");
+        String voidedLater = authorized("pm_card_visa");
+        String untouched = authorized("pm_card_visa");
+        Thread.sleep(20);
+        String from = java.time.LocalDateTime.now().toString();
+        Thread.sleep(20);
+        call("/v1/authorizations/" + capturedLater + "/capture", key(), null);
+        call("/v1/authorizations/" + voidedLater + "/void", key(), null);
+        // in the period: created (and one of them captured in it too)
+        List<String> createdInPeriod = List.of(authorized("pm_card_visa"), captured("pm_card_visa"), authorized("pm_card_visa"));
+        String to = java.time.LocalDateTime.now().plusHours(1).toString();
+
+        // a page of one row: every page boundary, and every change of pass, is crossed
+        List<String> listed = ids(report("authorizations", from, to, 1));
+
+        List<String> expected = new ArrayList<>(createdInPeriod);
+        expected.add(capturedLater);
+        expected.add(voidedLater);
+        assertThat(listed).containsExactlyInAnyOrderElementsOf(expected);
+        assertThat(listed).doesNotContain(untouched);
+        // rows created in the period come first, in creation order
+        assertThat(listed.subList(0, 3)).containsExactlyElementsOf(createdInPeriod);
+        assertThat(ids(report("authorizations", from, to, 1000))).containsExactlyElementsOf(listed);
+    }
+
+    @Test
+    void rowsWithTheSameTimestampAreAllListedWhenAPageEndsBetweenThem() throws Exception {
+        List<String> created = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            created.add(authorized("pm_card_visa"));
+        }
+        java.time.LocalDateTime same = java.time.LocalDateTime.now().withNano(0);
+        created.forEach(id -> jdbcTemplate.update("UPDATE authorizations SET created_at = ? WHERE id = ?",
+                java.sql.Timestamp.valueOf(same), id));
+
+        // other tests' rows may share the second; ours must all be there, each once
+        List<String> listed = ids(report("authorizations", same.minusSeconds(1).toString(), same.plusSeconds(1).toString(), 2));
+
+        assertThat(listed).containsAll(created).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void refundsArePagedWithTheirAuthorizationsReference() throws Exception {
+        String from = java.time.LocalDateTime.now().minusSeconds(1).toString();
+        String authorization = captured("pm_card_visa");
+        for (int i = 0; i < 3; i++) {
+            call("/v1/refunds", key(), "{\"authorizationId\":\"" + authorization + "\",\"amount\":10.00}");
+        }
+        String to = java.time.LocalDateTime.now().plusHours(1).toString();
+
+        List<JsonNode> refunds = report("refunds", from, to, 2).stream()
+                .filter(r -> r.get("authorizationId").asText().equals(authorization)).toList();
+
+        assertThat(refunds).hasSize(3);
+        assertThat(ids(refunds)).doesNotHaveDuplicates();
+        assertThat(refunds).allSatisfy(r -> assertThat(r.get("reference").asText()).isEqualTo("pay_test"));
+    }
+
+    @Test
+    void aPageHoldsAtLeastOneRowAndAHugeLimitIsCappedNotRefused() throws Exception {
+        String from = java.time.LocalDateTime.now().minusSeconds(1).toString();
+        authorized("pm_card_visa");
+        authorized("pm_card_visa");
+        String to = java.time.LocalDateTime.now().plusHours(1).toString();
+
+        JsonNode zero = objectMapper.readTree(mockMvc.perform(get("/v1/reports/settlement/authorizations")
+                .header("X-Api-Key", "test-key").param("from", from).param("to", to).param("limit", "0"))
+                .andReturn().getResponse().getContentAsString());
+        int huge = mockMvc.perform(get("/v1/reports/settlement/authorizations").header("X-Api-Key", "test-key")
+                .param("from", from).param("to", to).param("limit", "1000000")).andReturn().getResponse().getStatus();
+        int notANumber = mockMvc.perform(get("/v1/reports/settlement/authorizations").header("X-Api-Key", "test-key")
+                .param("from", from).param("to", to).param("limit", "many")).andReturn().getResponse().getStatus();
+
+        assertThat(zero.get("items")).hasSize(1);
+        assertThat(zero.get("next").isNull()).isFalse();
+        assertThat(huge).isEqualTo(200);
+        assertThat(notANumber).isEqualTo(400);
+    }
+
+    @Test
+    void aCursorThatIsNotOursOrBelongsToAnotherPeriodIsRejected() throws Exception {
+        String from = java.time.LocalDateTime.now().minusSeconds(1).toString();
+        authorized("pm_card_visa");
+        authorized("pm_card_visa");
+        String to = java.time.LocalDateTime.now().plusHours(1).toString();
+        String next = objectMapper.readTree(mockMvc.perform(get("/v1/reports/settlement/authorizations")
+                .header("X-Api-Key", "test-key").param("from", from).param("to", to).param("limit", "1"))
+                .andReturn().getResponse().getContentAsString()).get("next").asText();
+
+        for (String list : List.of("authorizations", "refunds", "transfers")) {
+            var garbage = mockMvc.perform(get("/v1/reports/settlement/" + list).header("X-Api-Key", "test-key")
+                    .param("from", from).param("to", to).param("after", "not-a-cursor")).andReturn().getResponse();
+            assertThat(garbage.getStatus()).isEqualTo(400);
+            assertThat(objectMapper.readTree(garbage.getContentAsString()).get("code").asText()).isEqualTo("invalid_cursor");
+        }
+        int otherPeriod = mockMvc.perform(get("/v1/reports/settlement/authorizations").header("X-Api-Key", "test-key")
+                .param("from", "2020-01-01T00:00:00").param("to", "2020-01-02T00:00:00").param("after", next))
                 .andReturn().getResponse().getStatus();
-        int tooLong = mockMvc.perform(get("/v1/reports/settlement").header("X-Api-Key", "test-key")
-                        .param("from", "2026-10-01T00:00:00").param("to", "2026-10-09T00:00:00"))
+        assertThat(otherPeriod).isEqualTo(400);
+    }
+
+    @Test
+    void theUnpagedReportIsGone() throws Exception {
+        int status = mockMvc.perform(get("/v1/reports/settlement").header("X-Api-Key", "test-key")
+                        .param("from", "2026-10-08T00:00:00").param("to", "2026-10-09T00:00:00"))
                 .andReturn().getResponse().getStatus();
 
-        assertThat(reversed).isEqualTo(400);
-        assertThat(tooLong).isEqualTo(400);
+        assertThat(status).isEqualTo(404);
+    }
+
+    @Test
+    void settlementReportRejectsAnInvalidPeriod() throws Exception {
+        for (String list : List.of("authorizations", "refunds", "transfers")) {
+            int reversed = mockMvc.perform(get("/v1/reports/settlement/" + list).header("X-Api-Key", "test-key")
+                            .param("from", "2026-10-09T00:00:00").param("to", "2026-10-08T00:00:00"))
+                    .andReturn().getResponse().getStatus();
+            int tooLong = mockMvc.perform(get("/v1/reports/settlement/" + list).header("X-Api-Key", "test-key")
+                            .param("from", "2026-10-01T00:00:00").param("to", "2026-10-09T00:00:00"))
+                    .andReturn().getResponse().getStatus();
+
+            assertThat(reversed).isEqualTo(400);
+            assertThat(tooLong).isEqualTo(400);
+        }
     }
 
     @Test

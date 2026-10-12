@@ -125,8 +125,9 @@ claimed with `SKIP LOCKED`) settles or fails them, and sends returning ones back
 | `ba_test_returned` | Paid, then `RETURNED` `account_frozen` 60s later |
 | `ba_test_slow` | Stays in transit for 10 minutes |
 
-Its settlement report (`GET /v1/reports/settlement`) lists transfers too: each one created, paid,
-failed or returned in the period, with its reference `po_<id>`.
+Its settlement report lists transfers too (`GET /v1/reports/settlement/transfers`, paged like the
+authorizations and refunds): each one created, paid, failed or returned in the period, with its
+reference `po_<id>`.
 
 ## Batch and instant payouts
 
@@ -157,7 +158,9 @@ Through the gateway, `/api/v1/payouts/**`. Payout ids are `po_<uuid>`.
 | `POST /` | `payouts:write` | Instant payout (see above) |
 | `GET /`, `GET /{id}` | `payouts:read` | The merchant's own payouts (another merchant's: 404); an operator (`payouts:operate`) sees all |
 | `POST /batches`, `GET /batches` | `payouts:operate` | Run today's batch now (`409` while another run holds the lock); batch history |
-| `GET /{id}/saga`, `POST /{id}/saga/retry` | `payouts:operate` | A payout's saga and step history; resume a parked saga |
+| `GET /sagas/attention` | `payouts:operate` or `payouts:audit` | The sagas that need a look: parked ones, and running ones in the same step for more than `stuckMinutes` (default 15). Waiting on the bank (in transit, return window) is not stuck |
+| `GET /{id}/saga` | `payouts:operate` or `payouts:audit` | A payout's saga and step history |
+| `POST /{id}/saga/retry` | `payouts:operate` | Resume a parked saga |
 | `POST /lookup {payoutIds}` | `payouts:audit` | For the reconciliation: statuses, and whether money may still be moving |
 
 Merchant tokens carry `payouts:read` and `payouts:write` (computed when the token is issued, so

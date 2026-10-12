@@ -5,6 +5,7 @@ import com.shylesh.payment_service.dto.CreatePaymentRequest;
 import com.shylesh.payment_service.dto.PaymentResponse;
 import com.shylesh.payment_service.dto.PaymentAuditView;
 import com.shylesh.payment_service.dto.PaymentLookupRequest;
+import com.shylesh.payment_service.dto.SagaAttentionResponse;
 import com.shylesh.payment_service.dto.SagaResponse;
 import com.shylesh.payment_service.exception.InvalidIdempotencyKeyException;
 import com.shylesh.payment_service.security.CurrentMerchant;
@@ -33,6 +34,8 @@ import java.util.UUID;
 public class PaymentController {
 
     private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 255;
+    private static final int MAX_STUCK_MINUTES = 7 * 24 * 60;
+    private static final int MAX_ATTENTION_LIMIT = 200;
 
     private final PaymentService paymentService;
     private final IdentifierService identifierService;
@@ -105,9 +108,23 @@ public class PaymentController {
         return ResponseEntity.ok(paymentService.lookupPayments(ids));
     }
 
-    /** Operator: the payment's sagas with their step history. */
+    /**
+     * Operator or auditor: the sagas that need a look. Parked ones (REQUIRES_ATTENTION), and
+     * running ones that have been in the same step for more than stuckMinutes (15, as the
+     * SagaStepStuck alert). The counts are complete; the list has the oldest of each kind.
+     */
+    @GetMapping("/sagas/attention")
+    @PreAuthorize("hasAnyAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_AUDIT, T(com.shylesh.payment_service.security.Scopes).PAYMENTS_OPERATE)")
+    public ResponseEntity<SagaAttentionResponse> sagasNeedingAttention(@RequestParam(defaultValue = "15") int stuckMinutes,
+                                                                       @RequestParam(defaultValue = "50") int limit) {
+
+        return ResponseEntity.ok(paymentService.sagasNeedingAttention(
+                Math.max(0, Math.min(stuckMinutes, MAX_STUCK_MINUTES)), Math.max(1, Math.min(limit, MAX_ATTENTION_LIMIT))));
+    }
+
+    /** Operator or auditor: the payment's sagas with their step history. Reading does not need the scope that can retry. */
     @GetMapping("/{paymentId}/saga")
-    @PreAuthorize("hasAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_OPERATE)")
+    @PreAuthorize("hasAnyAuthority(T(com.shylesh.payment_service.security.Scopes).PAYMENTS_AUDIT, T(com.shylesh.payment_service.security.Scopes).PAYMENTS_OPERATE)")
     public ResponseEntity<List<SagaResponse>> getSagas(@PathVariable String paymentId) {
 
         UUID id = identifierService.parsePaymentId(paymentId);

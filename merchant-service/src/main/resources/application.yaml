@@ -39,6 +39,11 @@ payflow:
         # Reads payable balances from the ledger. Local development default only.
         client-secret: ${PAYFLOW_PAYOUT_CLIENT_SECRET:local-dev-payout-secret}
         scopes: [ledger:admin]
+      - client-id: incident-agent
+        # The incident-investigation agent (a separate project). Read-only: it can look at sagas
+        # and reconciliation runs, and can retry or start nothing. Local development default only.
+        client-secret: ${PAYFLOW_INCIDENT_AGENT_CLIENT_SECRET:local-dev-incident-agent-secret}
+        scopes: [payments:audit, payouts:audit, reconciliation:audit]
 
 management:
   endpoint:

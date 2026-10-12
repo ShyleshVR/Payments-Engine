@@ -70,6 +70,23 @@ scope it doesn't have is rejected with `invalid_scope`.
 | `payments:operate` | operator | inspect and retry **any** payment's saga (`/saga`, `/saga/retry`) |
 | `ledger:admin` | operator | platform-clearing balance; any merchant's balance and transactions |
 | `merchants:admin` | operator | merchant and credential admin API |
+| `reconciliation:admin` | operator | read reconciliation runs and start one |
+| `payments:audit` | service clients | read-only: look up any payment, read any payment's saga, list the sagas needing attention |
+| `payouts:audit` | service clients | read-only: the same for payouts |
+| `reconciliation:audit` | service clients | read-only: reconciliation runs and their discrepancies, but not starting a run |
+
+The audit scopes exist so that reading never needs a scope that can also change something.
+An operator token is not an audit token; the endpoints that only read accept either.
+
+**Service clients** are other programs with their own client id and secret, registered from
+configuration (`payflow.auth.service-clients`). Each holds only what it needs, and can never be
+given a merchant scope:
+
+| Client | Scopes | Used for |
+|---|---|---|
+| `reconciliation-service` | `ledger:admin`, `payments:audit`, `payouts:audit` | reading the sources of the daily reconciliation |
+| `payout-service` | `ledger:admin` | reading payable balances |
+| `incident-agent` | `payments:audit`, `payouts:audit`, `reconciliation:audit` | the incident-investigation agent (a separate project): it can look at sagas and reconciliation runs, and can retry or start nothing |
 
 Processing outcomes are not anyone's to set: the payment saga drives authorization, capture and
 settlement against the card processor and the ledger (see [SAGA.md](SAGA.md)). The operator

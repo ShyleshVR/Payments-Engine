@@ -1,7 +1,5 @@
 package com.shylesh.reconciliation_service.persistence;
 
-import com.shylesh.reconciliation_service.domain.Records;
-
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -41,6 +39,10 @@ public class ReconciliationRun {
     @Column(name = "finished_at")
     private LocalDateTime finishedAt;
 
+    /** When the run last said it was alive; a RUNNING run that has been silent too long is abandoned. */
+    @Column(name = "heartbeat_at")
+    private LocalDateTime heartbeatAt;
+
     @Column(name = "payments_checked")
     private Integer paymentsChecked;
 
@@ -70,18 +72,29 @@ public class ReconciliationRun {
                 .trigger(trigger)
                 .status(RunStatus.RUNNING)
                 .startedAt(now)
+                .heartbeatAt(now)
                 .build();
     }
 
-    public void complete(Records.Result result, LocalDateTime now) {
+    public void heartbeat(LocalDateTime now) {
+        this.heartbeatAt = now;
+    }
+
+    /** The last time the run was known to be alive (runs from before heartbeats: when they started). */
+    public LocalDateTime lastSeenAt() {
+        return heartbeatAt != null ? heartbeatAt : startedAt;
+    }
+
+    public void complete(int paymentsChecked, int matched, int pending, int payoutsChecked, int payoutsMatched,
+                         int payoutsPending, int discrepancyCount, LocalDateTime now) {
         this.status = RunStatus.COMPLETED;
-        this.paymentsChecked = result.checked();
-        this.matched = result.matched();
-        this.pending = result.pending();
-        this.payoutsChecked = result.payoutsChecked();
-        this.payoutsMatched = result.payoutsMatched();
-        this.payoutsPending = result.payoutsPending();
-        this.discrepancyCount = result.discrepancies().size();
+        this.paymentsChecked = paymentsChecked;
+        this.matched = matched;
+        this.pending = pending;
+        this.payoutsChecked = payoutsChecked;
+        this.payoutsMatched = payoutsMatched;
+        this.payoutsPending = payoutsPending;
+        this.discrepancyCount = discrepancyCount;
         this.finishedAt = now;
     }
 

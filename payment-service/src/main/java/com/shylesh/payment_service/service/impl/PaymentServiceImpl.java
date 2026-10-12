@@ -3,6 +3,7 @@ package com.shylesh.payment_service.service.impl;
 import com.shylesh.payment_service.dto.CreatePaymentRequest;
 import com.shylesh.payment_service.dto.PaymentResponse;
 import com.shylesh.payment_service.dto.PaymentAuditView;
+import com.shylesh.payment_service.dto.SagaAttentionResponse;
 import com.shylesh.payment_service.dto.SagaResponse;
 import com.shylesh.payment_service.entity.Payment;
 import com.shylesh.payment_service.entity.PaymentStatus;
@@ -31,9 +32,13 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
+import org.springframework.data.domain.Limit;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -227,6 +232,26 @@ public class PaymentServiceImpl implements PaymentService {
                         p.getPaymentMethod() != null,
                         p.getCreatedAt(), p.getUpdatedAt()))
                 .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public SagaAttentionResponse sagasNeedingAttention(int stuckAfterMinutes, int limit) {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime stuckSince = now.minusMinutes(stuckAfterMinutes);
+        List<SagaAttentionResponse.Item> sagas = new ArrayList<>();
+        sagaRepository.findParked(Limit.of(limit)).forEach(saga -> sagas.add(attentionItem(saga, "PARKED", now)));
+        sagaRepository.findInStepSince(stuckSince, Limit.of(limit)).forEach(saga -> sagas.add(attentionItem(saga, "STUCK", now)));
+        return new SagaAttentionResponse(sagaRepository.countParked(), sagaRepository.countInStepSince(stuckSince),
+                stuckAfterMinutes, sagas);
+    }
+
+    private static SagaAttentionResponse.Item attentionItem(PaymentSaga saga, String reason, LocalDateTime now) {
+        return new SagaAttentionResponse.Item("pay_" + saga.getPaymentId(), saga.getId(), saga.getType().name(), reason,
+                saga.getState().name(), saga.getStuckState() == null ? null : saga.getStuckState().name(),
+                saga.getAttempt(), saga.getStepStartedAt(),
+                Math.max(0, Duration.between(saga.getStepStartedAt(), now).toMinutes()),
+                saga.getFailureCode(), saga.getLastError(), saga.getCreatedAt());
     }
 
     private SagaResponse toResponse(PaymentSaga saga) {

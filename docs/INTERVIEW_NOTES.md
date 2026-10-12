@@ -34,7 +34,7 @@ Then name the three hardest problems and how each is solved:
 | | |
 |---|---|
 | Services / databases / Kafka topics | 9 / 8 / 6 main topics plus dead-letter topics |
-| Automated tests | 441, run in CI on every push; 29 for the payment saga state machine and 21 for the payout one, 15 Testcontainers saga scenarios, 31 reconciliation rules; plus promtool tests for every alert rule |
+| Automated tests | 463, run in CI on every push; 29 for the payment saga state machine and 21 for the payout one, 15 Testcontainers saga scenarios, 31 reconciliation rules; plus promtool tests for every alert rule |
 | Rolling restart under ~12 req/s | 429 requests, 0 failed |
 | Pods force-killed under traffic | ~1,085 requests, 0 failed (after adding gateway retries for idempotent requests) |
 | Processor outage of 45s, 20 payments in flight | Circuit opened; all 20 succeeded afterwards |
@@ -43,6 +43,7 @@ Then name the three hardest problems and how each is solved:
 | Concurrent duplicate processor requests (8 identical) | 1 authorization, 8 identical answers |
 | Reconciliation, 52 payments × 3 databases (by hand, saga phase) | 0 discrepancies; debits = credits |
 | Daily reconciliation after a simulated incident (ledger down, 13-min processor outage, ~950 payments) | 916 payments with money movement, 916 matched, 0 discrepancies |
+| Reconciling the load-test day (2,750,997 payments) | Before: the processor OOM-killed every hour. After: 31 minutes, 2,750,997 of 2,750,997 matched, peak heap 110 MB of 604 MB, 0 restarts; a run whose pod was killed was taken over 5 minutes later |
 | Injected corruption (3 kinds) | Each detected with the right type; alert in alert-sink within ~40s; resolved after the fix and a re-run |
 | Alert rules | 16, each unit-tested with promtool; 11 also fired for real on the cluster |
 | Payouts on the cluster | Every bank outcome (paid, failed, invalid, returned, stuck) ended right; a bank outage plus a pod kill gave exactly 1 transfer; 7 payouts reconciled with 0 discrepancies, an injected amount change caught |
@@ -235,7 +236,9 @@ nothing falls between days. Payments mid-saga are reported as pending, not as er
 **How does a scheduled job run once with several replicas?** ShedLock (a lock row in Postgres
 using the database's clock), plus "one completed run per day" checked before running, plus a
 partial unique index allowing only one running run per day, which also covers a manual run racing
-the scheduler. An hourly catch-up re-runs any recent day that has no completed run.
+the scheduler. An hourly catch-up re-runs any recent day that has no completed run. The lock is
+short (10 minutes) and the run renews it with its heartbeat, so it covers a run of any length
+without outliving a killed pod by hours; a run that stops reporting is taken over.
 
 ## Stories: things that went wrong, and what they taught
 
@@ -264,6 +267,16 @@ the scheduler. An hourly catch-up re-runs any recent day that has no completed r
   and the last day was clean, so the alert stayed silent while the day before had 218
   discrepancies. Fix: alert on each recent day's latest run. Lesson: test what an alert does
   over a sequence of events, not one state.
+- **A nightly job that killed its own source.** The day after the load test, two reconciliation
+  alerts fired. The job asked the processor for the whole day's report in one request: 2.75
+  million authorizations loaded into a 604 MB heap. The processor was OOM-killed, the run
+  failed, the hourly catch-up retried, and a pod died every hour. The reconciliation would
+  have held the day in memory too, the ledger listing had no index on its time column, and a
+  run whose pod died blocked its day for ever. Fix: cursor-paged sources, a staging table,
+  chunks of 2,000 payments through the unchanged rules, and a heartbeat so a dead run is taken
+  over. The same day now reconciles in 31 minutes with a 110 MB heap. Lesson: every list an
+  API returns needs a bound, and a batch job must be tested at the size production will
+  reach, not the size of the test data.
 - **Legacy data versus a new control.** The first reconciliation flagged 109 payments: all made
   before the processor existed, settled through the old operator endpoints. They weren't wrong,
   just out of scope. Reconciliation now covers processor-backed payments only, decided from

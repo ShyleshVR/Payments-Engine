@@ -249,3 +249,30 @@ linked documents; the identifier scheme also has its own record, [ADR-001](adr/A
 - **Alternatives:** Gatling (heavier, JVM); k6 from the host (measures the port-forward);
   a fixed "N req/s" target (doesn't say what breaks).
   [LOAD_TEST.md](LOAD_TEST.md)
+
+### 23. Reconcile a day from a staging table, in chunks of payments
+- **Decision:**
+  - A reconciliation run copies the day's records from the processor and the ledger into an
+    unlogged staging table, a page at a time.
+  - It then reconciles 2,000 payments at a time with the unchanged pure reconciler and adds
+    up the chunks.
+  - The sources serve cursor-paged listings (a keyset on time and id). The processor's
+    one-request report is removed.
+  - A run records a heartbeat, and a run that went silent is taken over.
+- **Why:** the first large day (2.75 million payments, left by the load test) could not be
+  reconciled. The processor built the whole report in memory and was OOM-killed every hour,
+  and the reconciliation would have held the day in memory too. Memory must not grow with the
+  day. A chunk of payments holds all of each payment's records, so every rule works unchanged
+  and the chunks add up exactly.
+- **Cost:**
+  - The day is written once more: 2.1 GB for 5.6 million records, deleted after the run.
+  - A large day takes 31 minutes, most of it random reads of the staged rows.
+  - Callers of the report must follow cursors.
+- **Alternatives:**
+  - Slices of time: each needs the matching margin on both sides, and a payment whose facts
+    fall in two slices is counted twice.
+  - Streaming both sources sorted by payment and merging them: no staging, but each source
+    would have to sort a day by payment id, and a failed stream starts again from zero.
+  - A bigger heap: moves the limit without removing it.
+  - Refusing an oversized period: the processor survives, but the day is never reconciled.
+  [RECONCILIATION.md](RECONCILIATION.md#large-days)

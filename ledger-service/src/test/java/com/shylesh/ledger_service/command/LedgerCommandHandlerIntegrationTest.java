@@ -57,6 +57,9 @@ class LedgerCommandHandlerIntegrationTest {
     private LedgerTransactionRepository transactionRepository;
 
     @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
+    @Autowired
     private LedgerEntryRepository entryRepository;
 
     @Autowired
@@ -247,7 +250,7 @@ class LedgerCommandHandlerIntegrationTest {
         java.time.LocalDateTime to = java.time.LocalDateTime.now().plusMinutes(1);
 
         List<com.shylesh.ledger_service.dto.LedgerTransactionSummary> period = transactionRepository
-                .findSummariesBetween(from, to, org.springframework.data.domain.PageRequest.of(0, 1000)).getContent();
+                .findSummariesAfter(to, from, new UUID(0, 0), org.springframework.data.domain.Limit.of(1000));
         List<com.shylesh.ledger_service.dto.LedgerTransactionSummary> open = transactionRepository.findOpenRefundHoldsCreatedBefore(to);
 
         assertThat(period).filteredOn(t -> donePayment.equals(t.paymentId()))
@@ -256,6 +259,43 @@ class LedgerCommandHandlerIntegrationTest {
                 .allSatisfy(t -> assertThat(t.amount()).isEqualByComparingTo("30.00"));
         assertThat(open).extracting(com.shylesh.ledger_service.dto.LedgerTransactionSummary::paymentId)
                 .contains(openPayment).doesNotContain(donePayment);
+    }
+
+    @Test
+    void aPeriodsTransactionsAreListedOnceEachWhenReadAPageAtATime() {
+        java.time.LocalDateTime from = java.time.LocalDateTime.now().minusMinutes(1);
+        UUID merchantId = merchantWithBalance("500.00");
+        List<UUID> payments = new java.util.ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            UUID paymentId = UUID.randomUUID();
+            payments.add(paymentId);
+            handler.handle(command(LedgerCommandType.HOLD_REFUND, UUID.randomUUID(), paymentId, merchantId, "10.00"));
+        }
+        java.time.LocalDateTime to = java.time.LocalDateTime.now().plusMinutes(1);
+        // three of them at the very same instant: a page must be able to end between such rows
+        java.time.LocalDateTime same = java.time.LocalDateTime.now().withNano(0);
+        payments.subList(0, 3).forEach(paymentId -> jdbcTemplate.update(
+                "UPDATE ledger_transactions SET created_at = ? WHERE payment_id = ?", java.sql.Timestamp.valueOf(same), paymentId));
+
+        // follow the cursor as the reconciliation does: start of the period, then each page's last row
+        List<com.shylesh.ledger_service.dto.LedgerTransactionSummary> listed = new java.util.ArrayList<>();
+        java.time.LocalDateTime afterTime = from;
+        UUID afterId = new UUID(0, 0);
+        while (true) {
+            var page = transactionRepository.findSummariesAfter(to, afterTime, afterId, org.springframework.data.domain.Limit.of(2));
+            listed.addAll(page);
+            if (page.size() < 2) {
+                break;
+            }
+            afterTime = page.getLast().createdAt();
+            afterId = page.getLast().transactionId();
+        }
+
+        List<UUID> ours = listed.stream().map(com.shylesh.ledger_service.dto.LedgerTransactionSummary::paymentId)
+                .filter(payments::contains).toList();
+        assertThat(ours).containsExactlyInAnyOrderElementsOf(payments);
+        assertThat(listed).extracting(com.shylesh.ledger_service.dto.LedgerTransactionSummary::transactionId).doesNotHaveDuplicates();
+        assertThat(listed).extracting(com.shylesh.ledger_service.dto.LedgerTransactionSummary::createdAt).isSorted();
     }
 
     @Test

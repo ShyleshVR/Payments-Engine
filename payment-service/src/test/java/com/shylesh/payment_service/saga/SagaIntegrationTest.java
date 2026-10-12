@@ -382,6 +382,48 @@ class SagaIntegrationTest {
     }
 
     @Test
+    void sagasNeedingAttentionAreTheParkedOnesAndThoseTooLongInAStepNotThoseWaitingForTheMerchant() {
+        // parked: the ledger rejects the settlement
+        ledger().decideWith(command -> command.commandType().equals("SETTLE_PAYMENT")
+                ? new String[]{"REJECTED", "SOMETHING_WRONG"} : new String[]{"SUCCEEDED", null});
+        UUID parked = pay("pm_card_visa", CaptureMethod.AUTOMATIC);
+        await().atMost(Duration.ofSeconds(15)).until(() -> saga(parked, SagaType.PAYMENT).getState() == SagaState.REQUIRES_ATTENTION);
+        // in a step: the ledger doesn't answer the settlement
+        ledger().alwaysSucceed();
+        ledger().pauseReplies();
+        UUID inAStep = pay("pm_card_visa", CaptureMethod.AUTOMATIC);
+        await().atMost(Duration.ofSeconds(15)).until(() -> saga(inAStep, SagaType.PAYMENT).getState() == SagaState.SETTLING);
+        // waiting for the merchant: authorized, capture is theirs to ask for
+        UUID waiting = pay("pm_card_visa", CaptureMethod.MANUAL);
+        awaitStatus(waiting, PaymentStatus.AUTHORIZED);
+
+        // "stuck after 0 minutes": every running step counts
+        var all = paymentService.sagasNeedingAttention(0, 50);
+        var ours = all.sagas().stream().filter(s -> List.of("pay_" + parked, "pay_" + inAStep, "pay_" + waiting).contains(s.paymentId())).toList();
+
+        assertThat(ours).extracting(com.shylesh.payment_service.dto.SagaAttentionResponse.Item::paymentId,
+                        com.shylesh.payment_service.dto.SagaAttentionResponse.Item::reason,
+                        com.shylesh.payment_service.dto.SagaAttentionResponse.Item::state,
+                        com.shylesh.payment_service.dto.SagaAttentionResponse.Item::stuckState)
+                .containsExactlyInAnyOrder(
+                        org.assertj.core.groups.Tuple.tuple("pay_" + parked, "PARKED", "REQUIRES_ATTENTION", "SETTLING"),
+                        org.assertj.core.groups.Tuple.tuple("pay_" + inAStep, "STUCK", "SETTLING", null));
+        assertThat(ours).filteredOn(s -> s.reason().equals("PARKED")).singleElement()
+                .satisfies(s -> assertThat(s.lastError()).contains("SOMETHING_WRONG"));
+        assertThat(all.parked()).isGreaterThanOrEqualTo(1);
+        assertThat(all.stuck()).isGreaterThanOrEqualTo(1);
+        // with the alert's 15 minutes, a step that began seconds ago is not stuck; the parked saga still shows
+        var afterFifteenMinutes = paymentService.sagasNeedingAttention(15, 50);
+        assertThat(afterFifteenMinutes.sagas()).extracting(com.shylesh.payment_service.dto.SagaAttentionResponse.Item::paymentId)
+                .contains("pay_" + parked).doesNotContain("pay_" + inAStep, "pay_" + waiting);
+        // the list is capped, the counts are not
+        assertThat(paymentService.sagasNeedingAttention(0, 1).sagas()).hasSizeLessThanOrEqualTo(2);
+
+        ledger().resumeReplies();
+        awaitStatus(inAStep, PaymentStatus.SUCCESS);
+    }
+
+    @Test
     void rejectedSettlementIsParkedAndAnOperatorRetryCompletesIt() {
         ledger().decideWith(command -> command.commandType().equals("SETTLE_PAYMENT")
                 ? new String[]{"REJECTED", "SOMETHING_WRONG"} : new String[]{"SUCCEEDED", null});

@@ -134,9 +134,18 @@ the capture; for a refund, the processor's refund.
 | Ledger reply for a command the saga isn't waiting for | Ignored (a duplicate, or the reply to an earlier re-send) | — |
 | A participant rejects something that should never be rejected | Parks with the reason | Unchanged until an operator retries |
 
-An operator inspects a saga with `GET /api/v1/payments/{id}/saga`, which returns its state and
+An operator finds the sagas that need a look with `GET /api/v1/payments/sagas/attention`. It
+lists the parked ones, and the running ones that have been in the same step for more than
+`stuckMinutes` (default 15, the `SagaStepStuck` alert's threshold), oldest first, with the counts
+of each. A saga waiting for the merchant's capture is not stuck. Both kinds are unfinished
+sagas, which an existing index covers, so the list costs the same however many sagas have
+finished (under 0.1 ms with 2.78 million in the table).
+
+An operator inspects one saga with `GET /api/v1/payments/{id}/saga`, which returns its state and
 every step outcome. After fixing the cause, `POST /api/v1/payments/{id}/saga/retry` resumes the
 parked step: processor steps reuse their idempotency key, and ledger steps send a new command.
+Reading (the list and the saga view) also works with the read-only `payments:audit` scope;
+retrying needs `payments:operate`.
 
 ## Idempotency at every hop
 
@@ -245,7 +254,8 @@ The ledger used to post from `PAYMENT_COMPLETED` / `PAYMENT_REFUNDED` events. It
 | `POST /payments/{id}/capture` | — | merchant, MANUAL capture → 202 |
 | `POST /payments/{id}/cancel` | `CREATED` → `CANCELLED` | releases an `AUTHORIZED` payment → 202, then `CANCELLED` |
 | `POST /payments/{id}/refund` | `SUCCESS` → `REFUNDED` at once | → 202 `REFUND_PENDING`, then `REFUNDED` or back to `SUCCESS` with `refundFailureCode` |
-| `GET /payments/{id}/saga`, `POST …/saga/retry` | — | operator (`payments:operate`) |
+| `GET /payments/{id}/saga`, `GET /payments/sagas/attention` | — | operator (`payments:operate`) or read-only (`payments:audit`) |
+| `POST /payments/{id}/saga/retry` | — | operator (`payments:operate`) |
 
 The response gains `captureMethod`, `failureCode` and `refundFailureCode`. Statuses are
 `PROCESSING`, `AUTHORIZED`, `SUCCESS`, `FAILED`, `CANCELLED`, `REFUND_PENDING`, `REFUNDED`
