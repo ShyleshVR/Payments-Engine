@@ -125,8 +125,9 @@ claimed with `SKIP LOCKED`) settles or fails them, and sends returning ones back
 | `ba_test_returned` | Paid, then `RETURNED` `account_frozen` 60s later |
 | `ba_test_slow` | Stays in transit for 10 minutes |
 
-Its settlement report (`GET /v1/reports/settlement`) lists transfers too: each one created, paid,
-failed or returned in the period, with its reference `po_<id>`.
+Its settlement report lists transfers too (`GET /v1/reports/settlement/transfers`, paged like the
+authorizations and refunds): each one created, paid, failed or returned in the period, with its
+reference `po_<id>`.
 
 ## Batch and instant payouts
 

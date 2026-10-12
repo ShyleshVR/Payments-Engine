@@ -1,5 +1,6 @@
 package com.shylesh.processor_simulator.persistence;
 
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -22,14 +23,20 @@ public interface TransferRepository extends JpaRepository<Transfer, String> {
             """, nativeQuery = true)
     List<Transfer> lockDue(@Param("now") LocalDateTime now, @Param("limit") int limit);
 
-    /** Transfers created, paid, failed or returned in [from, to) (settlement report). */
+    /**
+     * Transfers created, paid, failed or returned in [from, to), after the cursor, by id: a
+     * settlement report page. There is one transfer per payout, so (unlike authorizations) one
+     * query over the four timestamps is cheap enough.
+     */
     @Query("""
             SELECT t FROM Transfer t
-            WHERE (t.createdAt >= :from AND t.createdAt < :to)
-               OR (t.paidAt >= :from AND t.paidAt < :to)
-               OR (t.failedAt >= :from AND t.failedAt < :to)
-               OR (t.returnedAt >= :from AND t.returnedAt < :to)
-            ORDER BY t.createdAt, t.id
+            WHERE ((t.createdAt >= :from AND t.createdAt < :to)
+                OR (t.paidAt >= :from AND t.paidAt < :to)
+                OR (t.failedAt >= :from AND t.failedAt < :to)
+                OR (t.returnedAt >= :from AND t.returnedAt < :to))
+              AND t.id > :afterId
+            ORDER BY t.id
             """)
-    List<Transfer> findActiveBetween(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+    List<Transfer> pageActiveIn(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to,
+                                @Param("afterId") String afterId, Limit limit);
 }

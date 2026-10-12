@@ -14,6 +14,8 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -32,9 +34,16 @@ public class GlobalExceptionHandler {
         return invalid(message);
     }
 
-    @ExceptionHandler({HandlerMethodValidationException.class, ConstraintViolationException.class})
+    @ExceptionHandler({HandlerMethodValidationException.class, ConstraintViolationException.class,
+            MethodArgumentTypeMismatchException.class})
     public ResponseEntity<Map<String, Object>> handleInvalidParameter(Exception ex) {
         return invalid("Invalid Idempotency-Key or parameter");
+    }
+
+    /** An unknown URL is the caller's mistake, not ours: 404, not the catch-all's 500. */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<Map<String, Object>> handleUnknownPath(NoResourceFoundException ex) {
+        return ResponseEntity.status(404).body(ProcessorResult.error("ERROR", "not_found", "No such endpoint"));
     }
 
     @ExceptionHandler({MissingRequestHeaderException.class, MissingServletRequestParameterException.class})

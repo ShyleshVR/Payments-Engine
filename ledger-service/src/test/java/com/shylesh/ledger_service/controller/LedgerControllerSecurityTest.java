@@ -69,24 +69,45 @@ class LedgerControllerSecurityTest {
     }
 
     @Test
-    void operatorPagesThroughTransactionsOfAPeriod() throws Exception {
-        when(transactionRepository.findSummariesBetween(any(), any(), any()))
-                .thenReturn(new org.springframework.data.domain.SliceImpl<>(List.of(), org.springframework.data.domain.PageRequest.of(0, 500), true));
+    void operatorPagesThroughTransactionsOfAPeriodByFollowingTheCursor() throws Exception {
+        java.time.LocalDateTime from = java.time.LocalDateTime.parse("2026-10-08T00:00:00");
+        java.time.LocalDateTime to = java.time.LocalDateTime.parse("2026-10-09T00:00:00");
+        java.time.LocalDateTime lastOfPage = java.time.LocalDateTime.parse("2026-10-08T10:15:30.123456");
+        UUID lastId = UUID.randomUUID();
+        var last = new com.shylesh.ledger_service.dto.LedgerTransactionSummary(lastId, UUID.randomUUID(), null, null,
+                com.shylesh.ledger_service.persistence.LedgerTransactionType.SETTLEMENT, BigDecimal.TEN, "USD", lastOfPage);
+        // the first page starts before every row of the period; a full page has a next
+        when(transactionRepository.findSummariesAfter(eq(to), eq(from), eq(new UUID(0, 0)), any())).thenReturn(List.of(last));
+        when(transactionRepository.findSummariesAfter(eq(to), eq(lastOfPage), eq(lastId), any())).thenReturn(List.of());
 
-        mockMvc.perform(get("/api/v1/ledger/transactions").with(operator())
-                        .param("from", "2026-10-08T00:00:00").param("to", "2026-10-09T00:00:00"))
+        String firstPage = mockMvc.perform(get("/api/v1/ledger/transactions").with(operator())
+                        .param("from", from.toString()).param("to", to.toString()).param("size", "1"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.hasNext").value(true));
+                .andExpect(jsonPath("$.items[0].transactionId").value(lastId.toString()))
+                .andExpect(jsonPath("$.next").isNotEmpty())
+                .andReturn().getResponse().getContentAsString();
+        String next = new com.fasterxml.jackson.databind.ObjectMapper().readTree(firstPage).get("next").asText();
+
+        // the next page starts after that row, and a short page ends the listing
+        mockMvc.perform(get("/api/v1/ledger/transactions").with(operator())
+                        .param("from", from.toString()).param("to", to.toString()).param("size", "1").param("after", next))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isEmpty())
+                .andExpect(jsonPath("$.next").doesNotExist());
     }
 
     @Test
-    void periodAndPageSizeAreBounded() throws Exception {
+    void periodPageSizeAndCursorAreChecked() throws Exception {
         mockMvc.perform(get("/api/v1/ledger/transactions").with(operator())
                         .param("from", "2026-10-01T00:00:00").param("to", "2026-10-09T00:00:00"))
                 .andExpect(status().isBadRequest());
         mockMvc.perform(get("/api/v1/ledger/transactions").with(operator())
                         .param("from", "2026-10-08T00:00:00").param("to", "2026-10-09T00:00:00").param("size", "5000"))
                 .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/v1/ledger/transactions").with(operator())
+                        .param("from", "2026-10-08T00:00:00").param("to", "2026-10-09T00:00:00").param("after", "not-a-cursor"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(transactionRepository);
     }
 
     @Test

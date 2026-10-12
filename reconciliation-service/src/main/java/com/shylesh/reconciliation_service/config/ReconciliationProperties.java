@@ -16,6 +16,10 @@ import java.time.Duration;
  * @param payoutHoldStaleAfter how long a ledger payout hold may stay open (a transfer takes days)
  * @param payoutReturnGrace    how long a payout returned by the bank may wait for the payout
  *                             saga to notice and book it
+ * @param pageSize             records asked of the processor and the ledger per request (they cap it at 1000)
+ * @param chunkSize            payments (or payouts) reconciled at a time; what a run holds in memory
+ * @param abandonedAfter       how long a RUNNING run may stay silent before the next attempt takes
+ *                             its day over (its pod was killed); a live run speaks far more often
  */
 @ConfigurationProperties(prefix = "payflow.reconciliation")
 public record ReconciliationProperties(
@@ -26,6 +30,9 @@ public record ReconciliationProperties(
         @DefaultValue("1h") Duration refundHoldStaleAfter,
         @DefaultValue("4d") Duration payoutHoldStaleAfter,
         @DefaultValue("2h") Duration payoutReturnGrace,
+        @DefaultValue("1000") int pageSize,
+        @DefaultValue("2000") int chunkSize,
+        @DefaultValue("5m") Duration abandonedAfter,
         Endpoint processor,
         Endpoint ledger,
         Endpoint payments,

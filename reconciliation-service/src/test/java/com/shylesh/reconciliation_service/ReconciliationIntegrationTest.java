@@ -54,7 +54,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 /**
  * The service end to end against a real Postgres: a stub HTTP server plays the token endpoint,
- * the processor, the ledger and payment-service. "Now" is fixed at 2026-10-09 03:00 UTC, so the
+ * the processor, the ledger, payment-service and payout-service. "Now" is fixed at 2026-10-09 03:00 UTC, so the
  * days up to 2026-10-08 are over and can be reconciled by the scheduler.
  */
 @SpringBootTest(properties = {
@@ -146,8 +146,8 @@ class ReconciliationIntegrationTest {
         String notSettled = id();
         String openAuth = id();
         String inFlight = id();
-        stub.report = """
-                {"authorizations":[
+        stub.authorizations = """
+                [
                   {"id":"auth_1","reference":"pay_%s","status":"CAPTURED","amount":25.00,"currency":"USD","capturedAmount":25.00,"refundedAmount":0,
                    "createdAt":"2026-10-08T10:00:00","capturedAt":"2026-10-08T10:00:01","voidedAt":null},
                   {"id":"auth_2","reference":"pay_%s","status":"CAPTURED","amount":40.00,"currency":"USD","capturedAmount":40.00,"refundedAmount":0,
@@ -156,12 +156,11 @@ class ReconciliationIntegrationTest {
                    "createdAt":"2026-10-08T12:00:00","capturedAt":null,"voidedAt":null},
                   {"id":"auth_4","reference":"pay_%s","status":"CAPTURED","amount":9.00,"currency":"USD","capturedAmount":9.00,"refundedAmount":0,
                    "createdAt":"2026-10-08T23:59:00","capturedAt":"2026-10-08T23:59:30","voidedAt":null}
-                ],"refunds":[]}""".formatted(clean, notSettled, openAuth, inFlight);
-        // two ledger pages, to exercise paging
-        stub.ledgerPages = List.of(
-                "{\"items\":[{\"transactionId\":\"" + id() + "\",\"paymentId\":\"" + clean + "\",\"sagaId\":\"" + id()
-                        + "\",\"type\":\"SETTLEMENT\",\"amount\":25.0000,\"currency\":\"USD\",\"createdAt\":\"2026-10-08T10:00:02\"}],\"hasNext\":true}",
-                "{\"items\":[],\"hasNext\":false}");
+                ]""".formatted(clean, notSettled, openAuth, inFlight);
+        // one row a page, to exercise paging: the four authorizations arrive on four pages
+        stub.maxPage = 1;
+        stub.ledger = "[{\"transactionId\":\"" + id() + "\",\"paymentId\":\"" + clean + "\",\"sagaId\":\"" + id()
+                + "\",\"type\":\"SETTLEMENT\",\"amount\":25.0000,\"currency\":\"USD\",\"createdAt\":\"2026-10-08T10:00:02\"}]";
         stub.payments = """
                 [{"paymentId":"pay_%s","status":"SUCCESS","amount":25.00,"currency":"USD","sagaActive":false,"processorBacked":true},
                  {"paymentId":"pay_%s","status":"SUCCESS","amount":40.00,"currency":"USD","sagaActive":false,"processorBacked":true},
@@ -199,10 +198,20 @@ class ReconciliationIntegrationTest {
         // how the sources were called
         assertThat(stub.requestsTo("/oauth2/token")).isNotEmpty();
         assertThat(stub.requestsTo("/oauth2/token").getFirst().body()).contains("grant_type=client_credentials");
-        assertThat(stub.requestsTo("/v1/reports").getFirst().apiKey()).isEqualTo("processor-key");
-        assertThat(stub.requestsTo("/v1/reports").getFirst().query()).contains("from=2026-10-07T23:00", "to=2026-10-09T01:00");
-        assertThat(stub.requestsTo("/api/v1/ledger/transactions")).hasSize(2)
-                .allSatisfy(r -> assertThat(r.authorization()).isEqualTo("Bearer service-token"));
+        assertThat(stub.requestsTo("/v1/reports")).allSatisfy(r -> {
+            assertThat(r.apiKey()).isEqualTo("processor-key");
+            assertThat(r.query()).contains("from=2026-10-07T23:00", "to=2026-10-09T01:00", "limit=1000");
+        });
+        // each page is asked for with the cursor the page before it gave
+        assertThat(stub.requestsTo("/v1/reports/settlement/authorizations")).extracting(r -> r.query().contains("after=")
+                        ? r.query().replaceAll(".*after=([^&]*).*", "$1") : null)
+                .containsExactly(null, "c1", "c2", "c3");
+        assertThat(stub.requestsTo("/v1/reports/settlement/refunds")).hasSize(1);
+        assertThat(stub.requestsTo("/v1/reports/settlement/transfers")).hasSize(1);
+        assertThat(stub.requestsTo("/api/v1/ledger/transactions")).hasSize(1).allSatisfy(r -> {
+            assertThat(r.authorization()).isEqualTo("Bearer service-token");
+            assertThat(r.query()).contains("from=2026-10-07T23:00", "to=2026-10-09T01:00", "size=1000");
+        });
         assertThat(stub.requestsTo("/api/v1/payments/lookup").getFirst().authorization()).isEqualTo("Bearer service-token");
     }
 
@@ -223,19 +232,19 @@ class ReconciliationIntegrationTest {
     void payoutsAreReconciledAgainstTheBankAndPayoutService() throws Exception {
         String paid = id();
         String returnedNotBooked = id();
-        stub.report = """
-                {"authorizations":[],"refunds":[],"transfers":[
+        stub.transfers = """
+                [
                   {"id":"tr_1","reference":"po_%s","status":"PAID","amount":120.00,"currency":"USD","failureCode":null,
                    "createdAt":"2026-10-04T09:00:00","paidAt":"2026-10-04T09:00:20","failedAt":null,"returnedAt":null},
                   {"id":"tr_2","reference":"po_%s","status":"RETURNED","amount":30.00,"currency":"USD","failureCode":"account_frozen",
                    "createdAt":"2026-10-04T10:00:00","paidAt":"2026-10-04T10:00:20","failedAt":null,"returnedAt":"2026-10-04T15:00:00"}
-                ]}""".formatted(paid, returnedNotBooked);
-        stub.ledgerPages = List.of("{\"items\":["
+                ]""".formatted(paid, returnedNotBooked);
+        stub.ledger = "["
                 + "{\"transactionId\":\"" + id() + "\",\"paymentId\":null,\"payoutId\":\"" + paid + "\",\"sagaId\":\"" + id()
                 + "\",\"type\":\"PAYOUT\",\"amount\":120.0000,\"currency\":\"USD\",\"createdAt\":\"2026-10-04T09:00:25\"},"
                 + "{\"transactionId\":\"" + id() + "\",\"paymentId\":null,\"payoutId\":\"" + returnedNotBooked + "\",\"sagaId\":\"" + id()
                 + "\",\"type\":\"PAYOUT\",\"amount\":30.0000,\"currency\":\"USD\",\"createdAt\":\"2026-10-04T10:00:25\"}"
-                + "],\"hasNext\":false}");
+                + "]";
         stub.payouts = """
                 [{"payoutId":"po_%s","status":"PAID","amount":120.00,"currency":"USD","inFlight":false},
                  {"payoutId":"po_%s","status":"PAID","amount":30.00,"currency":"USD","inFlight":false}]
@@ -279,13 +288,13 @@ class ReconciliationIntegrationTest {
     @Test
     void aCaptureIsComparedByTheAmountActuallyCaptured() {
         String partial = id();
-        stub.report = """
-                {"authorizations":[
+        stub.authorizations = """
+                [
                   {"id":"auth_p","reference":"pay_%s","status":"CAPTURED","amount":25.00,"currency":"USD","capturedAmount":20.00,"refundedAmount":0,
                    "createdAt":"2026-10-05T10:00:00","capturedAt":"2026-10-05T10:00:01","voidedAt":null}
-                ],"refunds":[]}""".formatted(partial);
-        stub.ledgerPages = List.of("{\"items\":[{\"transactionId\":\"" + id() + "\",\"paymentId\":\"" + partial + "\",\"sagaId\":\"" + id()
-                + "\",\"type\":\"SETTLEMENT\",\"amount\":20.00,\"currency\":\"USD\",\"createdAt\":\"2026-10-05T10:00:02\"}],\"hasNext\":false}");
+                ]""".formatted(partial);
+        stub.ledger = "[{\"transactionId\":\"" + id() + "\",\"paymentId\":\"" + partial + "\",\"sagaId\":\"" + id()
+                + "\",\"type\":\"SETTLEMENT\",\"amount\":20.00,\"currency\":\"USD\",\"createdAt\":\"2026-10-05T10:00:02\"}]";
         stub.payments = """
                 [{"paymentId":"pay_%s","status":"SUCCESS","amount":25.00,"currency":"USD","sagaActive":false,"processorBacked":true}]
                 """.formatted(partial);

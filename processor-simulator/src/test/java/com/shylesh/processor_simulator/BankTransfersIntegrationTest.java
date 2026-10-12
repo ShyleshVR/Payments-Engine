@@ -218,13 +218,26 @@ class BankTransfersIntegrationTest {
         String id = reply.body().get("id").asText();
         await().atMost(Duration.ofSeconds(5)).until(() -> statusOf(id).equals("RETURNED"));
 
-        JsonNode report = objectMapper.readTree(mockMvc.perform(get("/v1/reports/settlement").header("X-Api-Key", "test-key")
-                        .param("from", LocalDateTime.now().minusHours(1).toString())
-                        .param("to", LocalDateTime.now().plusHours(1).toString()))
-                .andReturn().getResponse().getContentAsString());
+        // read with a page of one transfer, so the listing crosses page boundaries
+        String from = LocalDateTime.now().minusHours(1).toString();
+        String to = LocalDateTime.now().plusHours(1).toString();
+        java.util.List<JsonNode> transfers = new java.util.ArrayList<>();
+        String after = null;
+        do {
+            var request = get("/v1/reports/settlement/transfers").header("X-Api-Key", "test-key")
+                    .param("from", from).param("to", to).param("limit", "1");
+            if (after != null) {
+                request.param("after", after);
+            }
+            JsonNode page = objectMapper.readTree(mockMvc.perform(request).andReturn().getResponse().getContentAsString());
+            assertThat(page.get("items").size()).isLessThanOrEqualTo(1);
+            page.get("items").forEach(transfers::add);
+            after = page.get("next").isNull() ? null : page.get("next").asText();
+        } while (after != null);
+        assertThat(transfers.stream().map(t -> t.get("id").asText()).toList()).doesNotHaveDuplicates();
 
         JsonNode line = null;
-        for (JsonNode t : report.get("transfers")) {
+        for (JsonNode t : transfers) {
             if (t.get("id").asText().equals(id)) {
                 line = t;
             }

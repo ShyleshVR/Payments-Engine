@@ -531,14 +531,14 @@ its pom excludes it.
 
 | Module | Tests | Notes |
 |---|---|---|
-| payment-service | 80 | including the saga scenarios (see SAGA.md) and the audit lookup |
-| ledger-service | 38 | including the audit endpoints, outbox gauges and payout commands |
+| payment-service | 88 | including the saga scenarios (see SAGA.md) and the audit lookup |
+| ledger-service | 39 | including the audit endpoints (cursor-paged), outbox gauges and payout commands |
 | notification-service | 34 | context-load test excluded |
 | webhook-service | 128 | including payout webhooks |
 | merchant-service | 32 | including `PemFileJwkSourceTest` and `PemSigningKeyIntegrationTest` (Testcontainers): the PEM key signs, its thumbprint is the `kid`, no database key is created; and the configured service clients |
 | api-gateway | 17 | see below |
-| processor-simulator | 27 | including the settlement report and bank transfers |
-| reconciliation-service | 41 | see [RECONCILIATION.md](RECONCILIATION.md#testing) |
+| processor-simulator | 33 | including the paged settlement report and bank transfers |
+| reconciliation-service | 48 | see [RECONCILIATION.md](RECONCILIATION.md#testing) |
 | payout-service | 36 | see [PAYOUTS.md](PAYOUTS.md#testing) |
 | alert rules | every rule | `promtool test rules alerts.test.yml`; `amtool check-config` on both Alertmanager configurations |
 

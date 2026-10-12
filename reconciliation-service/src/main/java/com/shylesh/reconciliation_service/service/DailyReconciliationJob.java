@@ -31,7 +31,13 @@ import java.time.LocalDateTime;
 public class DailyReconciliationJob {
 
     static final String LOCK_NAME = "daily-reconciliation";
-    static final Duration LOCK_AT_MOST = Duration.ofMinutes(30);
+    /**
+     * Longer than a busy day takes (millions of payments: tens of minutes). The lock only keeps
+     * replicas from working on different days at once; what stops a day being reconciled twice is
+     * its RUNNING run (ReconciliationService), so a lock that outlives a killed pod delays the
+     * other replica's catch-up and nothing else.
+     */
+    static final Duration LOCK_AT_MOST = Duration.ofHours(2);
     static final Duration LOCK_AT_LEAST = Duration.ofSeconds(10);
 
     private final ReconciliationService reconciliationService;
