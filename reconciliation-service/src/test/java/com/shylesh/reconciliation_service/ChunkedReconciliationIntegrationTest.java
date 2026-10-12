@@ -10,6 +10,7 @@ import com.shylesh.reconciliation_service.persistence.ReconciliationRunRepositor
 import com.shylesh.reconciliation_service.persistence.RunStatus;
 import com.shylesh.reconciliation_service.persistence.RunTrigger;
 import com.shylesh.reconciliation_service.persistence.StagingStore;
+import com.shylesh.reconciliation_service.service.DailyReconciliationJob;
 import com.shylesh.reconciliation_service.service.ReconciliationService;
 import com.shylesh.reconciliation_service.service.RunInProgressException;
 
@@ -33,6 +34,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -46,6 +48,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,7 +64,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         "payflow.reconciliation.catch-up-initial-delay=PT1H",
         "payflow.reconciliation.cron=0 0 2 1 1 *",
         "payflow.reconciliation.page-size=3",
-        "payflow.reconciliation.chunk-size=2"
+        "payflow.reconciliation.chunk-size=2",
+        // a run reports that it is alive every half second, so a test can see it happen
+        "payflow.reconciliation.abandoned-after=PT5S"
 })
 @Testcontainers
 class ChunkedReconciliationIntegrationTest {
@@ -116,6 +121,12 @@ class ChunkedReconciliationIntegrationTest {
 
     @Autowired
     private StagingStore staging;
+
+    @Autowired
+    private DailyReconciliationJob job;
+
+    @Autowired
+    private Clock clock;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -401,10 +412,10 @@ class ChunkedReconciliationIntegrationTest {
     @Test
     void aRunThatIsStillReportingKeepsItsDay() {
         aBusyDay();
-        // started long ago (a big day), but heard from a minute ago
+        // started long ago (a big day), but heard from a second ago
         ReconciliationRun alive = runRepository.saveAndFlush(ReconciliationRun.builder()
                 .id(id()).businessDate(DAY).trigger(RunTrigger.SCHEDULED).status(RunStatus.RUNNING)
-                .startedAt(now().minusMinutes(40)).heartbeatAt(now().minusMinutes(1)).build());
+                .startedAt(now().minusMinutes(40)).heartbeatAt(LocalDateTime.now(clock).minusSeconds(1)).build());
         staging.addAuthorizations(alive.getId(), List.of(new Records.Authorization("auth_live", id(), "CAPTURED",
                 new BigDecimal("5.00"), "USD", BigDecimal.ZERO, now().minusDays(3), now().minusDays(3), null)));
 
@@ -413,6 +424,34 @@ class ChunkedReconciliationIntegrationTest {
         assertThat(runRepository.findById(alive.getId()).orElseThrow().getStatus()).isEqualTo(RunStatus.RUNNING);
         assertThat(staging.count(alive.getId())).isEqualTo(1);
         assertThat(runRepository.findAll()).hasSize(1);
+    }
+
+    @Test
+    void theSchedulerRenewsItsLockWhileARunWorks() {
+        aBusyDay();
+        // each of the 11 ledger pages takes a while, and notes how long the lock is held for
+        List<Timestamp> lockedUntil = new CopyOnWriteArrayList<>();
+        stub.onLedgerRead = () -> {
+            lockedUntil.add(jdbcTemplate.queryForObject("SELECT lock_until FROM shedlock WHERE name = 'daily-reconciliation'", Timestamp.class));
+            try {
+                Thread.sleep(150);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+
+        job.reconcileYesterday();
+
+        assertThat(runRepository.findAll()).singleElement().satisfies(run -> {
+            assertThat(run.getStatus()).isEqualTo(RunStatus.COMPLETED);
+            assertThat(run.getTrigger()).isEqualTo(RunTrigger.SCHEDULED);
+        });
+        // taken for 10 minutes, then pushed further out at each heartbeat of the run
+        assertThat(lockedUntil).hasSize(11).isSorted();
+        assertThat(lockedUntil.getLast()).isAfter(lockedUntil.getFirst());
+        // and given back when the job ends (kept only for its minimum of 10 seconds)
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT lock_until < now() + interval '1 minute' FROM shedlock WHERE name = 'daily-reconciliation'", Boolean.class)).isTrue();
     }
 
     @Test

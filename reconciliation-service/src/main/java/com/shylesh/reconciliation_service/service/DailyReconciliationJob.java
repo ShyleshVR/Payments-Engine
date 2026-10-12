@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import net.javacrumbs.shedlock.core.LockConfiguration;
+import net.javacrumbs.shedlock.core.LockExtender;
 import net.javacrumbs.shedlock.core.LockingTaskExecutor;
 
 import org.springframework.scheduling.annotation.Scheduled;
@@ -23,7 +24,8 @@ import java.time.LocalDateTime;
  * Runs the reconciliation of the previous day every night, and an hourly catch-up that
  * reconciles recent days without a completed run (missed while down, or failed because a source
  * was unavailable). Every replica schedules both; a ShedLock row in Postgres lets one of them run
- * at a time, and a day with a completed run is never reconciled again by the scheduler.
+ * at a time, and a day with a completed run is never reconciled again by the scheduler. The lock
+ * is held for 10 minutes at most and renewed by the run while it works.
  */
 @Slf4j
 @Component
@@ -32,12 +34,11 @@ public class DailyReconciliationJob {
 
     static final String LOCK_NAME = "daily-reconciliation";
     /**
-     * Longer than a busy day takes (millions of payments: tens of minutes). The lock only keeps
-     * replicas from working on different days at once; what stops a day being reconciled twice is
-     * its RUNNING run (ReconciliationService), so a lock that outlives a killed pod delays the
-     * other replica's catch-up and nothing else.
+     * How long the lock outlives a pod that was killed while holding it. A run takes as long as
+     * its day is big (millions of payments: half an hour), so the lock is not sized for the
+     * longest run: it is short, and a run renews it at every heartbeat (about every 30 seconds).
      */
-    static final Duration LOCK_AT_MOST = Duration.ofHours(2);
+    static final Duration LOCK_AT_MOST = Duration.ofMinutes(10);
     static final Duration LOCK_AT_LEAST = Duration.ofSeconds(10);
 
     private final ReconciliationService reconciliationService;
@@ -72,9 +73,23 @@ public class DailyReconciliationJob {
             return;
         }
         try {
-            reconciliationService.run(day, RunTrigger.SCHEDULED);
+            reconciliationService.run(day, RunTrigger.SCHEDULED, this::renewLock);
         } catch (RunInProgressException e) {
             log.info("Skipping {}: {}", day, e.getMessage());
+        }
+    }
+
+    /**
+     * Called by the run on this thread, inside withLock. If the lock can't be renewed (this pod
+     * stalled for longer than the lock lasts and it expired), the run carries on: a day is
+     * protected by its RUNNING run, not by this lock, which only keeps replicas from working at
+     * the same time.
+     */
+    private void renewLock() {
+        try {
+            LockExtender.extendActiveLock(LOCK_AT_MOST, LOCK_AT_LEAST);
+        } catch (LockExtender.LockExtensionException e) {
+            log.warn("Could not renew the scheduler lock: {}", e.getMessage());
         }
     }
 

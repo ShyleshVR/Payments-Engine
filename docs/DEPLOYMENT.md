@@ -538,7 +538,7 @@ its pom excludes it.
 | merchant-service | 32 | including `PemFileJwkSourceTest` and `PemSigningKeyIntegrationTest` (Testcontainers): the PEM key signs, its thumbprint is the `kid`, no database key is created; and the configured service clients |
 | api-gateway | 17 | see below |
 | processor-simulator | 33 | including the paged settlement report and bank transfers |
-| reconciliation-service | 48 | see [RECONCILIATION.md](RECONCILIATION.md#testing) |
+| reconciliation-service | 49 | see [RECONCILIATION.md](RECONCILIATION.md#testing) |
 | payout-service | 36 | see [PAYOUTS.md](PAYOUTS.md#testing) |
 | alert rules | every rule | `promtool test rules alerts.test.yml`; `amtool check-config` on both Alertmanager configurations |
 

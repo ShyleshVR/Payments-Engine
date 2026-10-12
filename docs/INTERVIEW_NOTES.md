@@ -34,7 +34,7 @@ Then name the three hardest problems and how each is solved:
 | | |
 |---|---|
 | Services / databases / Kafka topics | 9 / 8 / 6 main topics plus dead-letter topics |
-| Automated tests | 455, run in CI on every push; 29 for the payment saga state machine and 21 for the payout one, 15 Testcontainers saga scenarios, 31 reconciliation rules; plus promtool tests for every alert rule |
+| Automated tests | 456, run in CI on every push; 29 for the payment saga state machine and 21 for the payout one, 15 Testcontainers saga scenarios, 31 reconciliation rules; plus promtool tests for every alert rule |
 | Rolling restart under ~12 req/s | 429 requests, 0 failed |
 | Pods force-killed under traffic | ~1,085 requests, 0 failed (after adding gateway retries for idempotent requests) |
 | Processor outage of 45s, 20 payments in flight | Circuit opened; all 20 succeeded afterwards |
@@ -236,7 +236,9 @@ nothing falls between days. Payments mid-saga are reported as pending, not as er
 **How does a scheduled job run once with several replicas?** ShedLock (a lock row in Postgres
 using the database's clock), plus "one completed run per day" checked before running, plus a
 partial unique index allowing only one running run per day, which also covers a manual run racing
-the scheduler. An hourly catch-up re-runs any recent day that has no completed run.
+the scheduler. An hourly catch-up re-runs any recent day that has no completed run. The lock is
+short (10 minutes) and the run renews it with its heartbeat, so it covers a run of any length
+without outliving a killed pod by hours; a run that stops reporting is taken over.
 
 ## Stories: things that went wrong, and what they taught
 

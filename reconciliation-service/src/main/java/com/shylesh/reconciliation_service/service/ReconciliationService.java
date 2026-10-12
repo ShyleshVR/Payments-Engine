@@ -74,6 +74,12 @@ public class ReconciliationService {
     private final Clock clock;
 
     public ReconciliationRun run(LocalDate businessDate, RunTrigger trigger) {
+        return run(businessDate, trigger, () -> {
+        });
+    }
+
+    /** @param onHeartbeat called each time the run has recorded that it is alive (the scheduler renews its lock) */
+    public ReconciliationRun run(LocalDate businessDate, RunTrigger trigger, Runnable onHeartbeat) {
         takeOverAbandonedRuns(businessDate);
         ReconciliationRun started;
         try {
@@ -86,7 +92,7 @@ public class ReconciliationService {
         Timer.Sample sample = Timer.start(meterRegistry);
         ReconciliationRun run = started;
         try {
-            Totals totals = reconcile(started);
+            Totals totals = reconcile(started, onHeartbeat);
             transactionTemplate.executeWithoutResult(status -> {
                 stillOurs(started);
                 started.complete(totals.checked, totals.matched, totals.pending, totals.payoutsChecked, totals.payoutsMatched,
@@ -163,7 +169,7 @@ public class ReconciliationService {
         }
     }
 
-    private Totals reconcile(ReconciliationRun run) {
+    private Totals reconcile(ReconciliationRun run, Runnable onHeartbeat) {
         UUID runId = run.getId();
         LocalDateTime dayStart = run.getBusinessDate().atStartOfDay();
         LocalDateTime dayEnd = dayStart.plusDays(1);
@@ -171,7 +177,7 @@ public class ReconciliationService {
         LocalDateTime from = dayStart.minus(properties.matchingMargin());
         LocalDateTime to = dayEnd.plus(properties.matchingMargin());
         LocalDateTime now = now();
-        Pulse pulse = new Pulse(run);
+        Pulse pulse = new Pulse(run, onHeartbeat);
 
         // 1. the sources, a page at a time, into the staging table
         long[] staged = new long[4];
@@ -321,11 +327,13 @@ public class ReconciliationService {
      */
     private final class Pulse {
         private final ReconciliationRun run;
+        private final Runnable onHeartbeat;
         private final Duration every = properties.abandonedAfter().dividedBy(10);
         private LocalDateTime last;
 
-        Pulse(ReconciliationRun run) {
+        Pulse(ReconciliationRun run, Runnable onHeartbeat) {
             this.run = run;
+            this.onHeartbeat = onHeartbeat;
             this.last = run.lastSeenAt();
         }
 
@@ -340,6 +348,7 @@ public class ReconciliationService {
             }
             run.heartbeat(now);
             last = now;
+            onHeartbeat.run();
         }
     }
 }

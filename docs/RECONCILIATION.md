@@ -100,7 +100,9 @@ scheduler reconciles a day only once the margin after it has passed.
   missed while the service was down, or one that failed because a source was unavailable. It
   also runs a minute after startup.
 - **One runner:** every replica schedules both jobs; a ShedLock row in Postgres (`shedlock`
-  table, database clock) lets one replica at a time run them.
+  table, database clock) lets one replica at a time run them. The lock lasts 10 minutes at
+  most, and a run renews it at every heartbeat, so it covers a run of any length and is free
+  again within 10 minutes of a pod being killed.
 - **One run per day:** the scheduler never re-runs a day that has a completed run, and a partial
   unique index allows only one *running* run per day, even between a scheduled and a manual run.
   Tested: two "replicas" running the catch-up at the same moment produce exactly one run per day.
@@ -219,9 +221,10 @@ returned the file to 0 bytes three and a half minutes after the run.
   Postgres the memory to cache them.
 - **A manual run answers when it ends.** For a day this size the gateway gives up after 30 s
   (`504`) while the run carries on; read it with `GET /api/v1/reconciliation/runs?date=…`.
-- **The scheduler's lock lasts 2 hours at most** (it was 30 minutes), longer than a large day
-  takes. If the pod holding it is killed, the other replica's scheduled runs wait for the lock
-  to expire; a manual run can take the day over after 5 minutes.
+- **After a pod is killed mid-run, the scheduler waits for its next tick.** The lock is free
+  within 10 minutes and the day can be taken over after 5, but the catch-up runs hourly (and a
+  minute after a pod starts, when the lock may still be held). A manual run can take the day
+  over as soon as the 5 minutes have passed.
 - **Open holds are still one list,** and the ledger's query for them looks at every hold it
   ever made: 1.5 s after the load test's 25,000 refunds. It runs once per run. To stay flat it
   would need an index over the holds that are still open.
@@ -319,6 +322,7 @@ merchant-service).
 | Facts checked on the day they happened, matched within a window | No false alarms across midnight, nothing checked twice | A day is reconciled only after the margin has passed |
 | Fail the run if a source is unreadable | A partial snapshot would look like discrepancies | A failed run must be retried (automatic, hourly) |
 | ShedLock + idempotency per day + unique running run | Exactly one reconciliation per day across replicas | — |
+| A short scheduler lock, renewed by the run's heartbeat | A lock sized for the longest run (hours) would outlive a killed pod by as long | The run and the lock are tied together by a callback |
 | In-flight payments reported as pending | Avoids false alarms for payments mid-saga | A payment stuck all night is skipped here (it has its own alert) |
 | Pre-processor payments out of scope, flagged per payment | They have no processor record by design; the flag comes from the data (no payment method), not a cut-over date to configure | They are not reconciled at all (their ledger postings still balance) |
 | Alert on each recent day's latest run | A clean day reconciled later can't hide a bad one | Resolving needs a clean re-run of that day |
@@ -379,13 +383,15 @@ counts separately (`payoutsChecked`, `payoutsMatched`, `payoutsPending`); discre
   - an unreadable source fails the run;
   - two concurrent "replicas" reconcile each finished day exactly once;
   - API security, future dates, and a 409 for a day already running.
-- **Large days (7 tests, same setup, 3 records a page and 2 payments a chunk):**
+- **Large days (8 tests, same setup, 3 records a page and 2 payments a chunk):**
   - a day of 28 payments and 5 payouts with 16 known discrepancies, read in 10 and 11 pages
     and reconciled in 14 chunks, gives exactly those counts and discrepancies; every payment
     is looked up in exactly one chunk;
   - a run that fails halfway keeps no staged rows and no discrepancies, and the day reconciles
     once the source is back;
-  - a run silent for 10 minutes is taken over; one heard from a minute ago keeps its day;
+  - a run silent for 10 minutes is taken over; one heard from a second ago keeps its day;
+  - the scheduler's lock is pushed further out while a scheduled run works, and given back
+    when it ends;
   - a run that is taken over while it works stops without writing a result;
   - staged records come back unchanged, in the source's order, for a range of payments or
     payouts; rows left by runs that are over are deleted, those of a run at work are kept.
