@@ -34,7 +34,7 @@ Then name the three hardest problems and how each is solved:
 | | |
 |---|---|
 | Services / databases / Kafka topics | 9 / 8 / 6 main topics plus dead-letter topics |
-| Automated tests | 456, run in CI on every push; 29 for the payment saga state machine and 21 for the payout one, 15 Testcontainers saga scenarios, 31 reconciliation rules; plus promtool tests for every alert rule |
+| Automated tests | 463, run in CI on every push; 29 for the payment saga state machine and 21 for the payout one, 15 Testcontainers saga scenarios, 31 reconciliation rules; plus promtool tests for every alert rule |
 | Rolling restart under ~12 req/s | 429 requests, 0 failed |
 | Pods force-killed under traffic | ~1,085 requests, 0 failed (after adding gateway retries for idempotent requests) |
 | Processor outage of 45s, 20 payments in flight | Circuit opened; all 20 succeeded afterwards |

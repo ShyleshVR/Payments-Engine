@@ -60,6 +60,10 @@ class PaymentControllerSecurityTest {
         return jwt().authorities(new SimpleGrantedAuthority("SCOPE_payments:operate"));
     }
 
+    private RequestPostProcessor auditor() {
+        return jwt().authorities(new SimpleGrantedAuthority("SCOPE_payments:audit"));
+    }
+
     private PaymentResponse response() {
         return PaymentResponse.builder().paymentId("pay_" + paymentId).amount(new BigDecimal("10.00")).currency("USD")
                 .status("CREATED").createdAt(LocalDateTime.now()).build();
@@ -136,6 +140,45 @@ class PaymentControllerSecurityTest {
                 .andExpect(status().isOk());
         mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/saga/retry").with(operator()))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void anAuditorCanReadSagasButNotRetryThem() throws Exception {
+        when(paymentService.getSagas(paymentId)).thenReturn(List.of());
+
+        mockMvc.perform(get("/api/v1/payments/pay_" + paymentId + "/saga").with(auditor()))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/saga/retry").with(auditor()))
+                .andExpect(status().isForbidden());
+        verify(paymentService).getSagas(paymentId);
+        verify(paymentService, org.mockito.Mockito.never()).retrySaga(any());
+    }
+
+    @Test
+    void sagasNeedingAttentionAreListedForAuditorsAndOperatorsWithBoundedParameters() throws Exception {
+        var parked = new com.shylesh.payment_service.dto.SagaAttentionResponse.Item("pay_" + paymentId, UUID.randomUUID(),
+                "PAYMENT", "PARKED", "REQUIRES_ATTENTION", "CAPTURING", 4, LocalDateTime.now().minusMinutes(42), 42,
+                "capture_unknown", "No answer to the capture", LocalDateTime.now().minusMinutes(43));
+        when(paymentService.sagasNeedingAttention(15, 50))
+                .thenReturn(new com.shylesh.payment_service.dto.SagaAttentionResponse(1, 0, 15, List.of(parked)));
+        when(paymentService.sagasNeedingAttention(10080, 200))
+                .thenReturn(new com.shylesh.payment_service.dto.SagaAttentionResponse(0, 0, 10080, List.of()));
+
+        mockMvc.perform(get("/api/v1/payments/sagas/attention").with(auditor()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.parked").value(1))
+                .andExpect(jsonPath("$.stuckAfterMinutes").value(15))
+                .andExpect(jsonPath("$.sagas[0].paymentId").value("pay_" + paymentId))
+                .andExpect(jsonPath("$.sagas[0].reason").value("PARKED"))
+                .andExpect(jsonPath("$.sagas[0].stuckState").value("CAPTURING"));
+        // out-of-range values are brought into range, not refused
+        mockMvc.perform(get("/api/v1/payments/sagas/attention").param("stuckMinutes", "999999").param("limit", "100000").with(operator()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.stuckAfterMinutes").value(10080));
+        mockMvc.perform(get("/api/v1/payments/sagas/attention").with(merchant("payments:write", "payments:read")))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/v1/payments/sagas/attention"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test

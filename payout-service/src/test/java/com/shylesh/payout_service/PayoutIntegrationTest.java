@@ -369,6 +369,75 @@ class PayoutIntegrationTest {
     }
 
     @Test
+    void anAuditorCanListAndReadParkedSagasButNotRetryThem() throws Exception {
+        UUID merchantId = merchant("ba_test_ok", "20.00");
+        stub.bankDown = true;
+        UUID payoutId = payout(merchantId, "20.00");
+        awaitSaga(payoutId, SagaState.REQUIRES_ATTENTION);
+
+        Reply list = call(as(get("/api/v1/payouts/sagas/attention"), null, "payouts:audit"));
+        Reply saga = call(as(get("/api/v1/payouts/po_" + payoutId + "/saga"), null, "payouts:audit"));
+        Reply retry = call(as(post("/api/v1/payouts/po_" + payoutId + "/saga/retry"), null, "payouts:audit"));
+        Reply asMerchant = call(as(get("/api/v1/payouts/sagas/attention"), merchantId, "payouts:read", "payouts:write"));
+
+        assertThat(list.status()).isEqualTo(200);
+        assertThat(list.body().get("parked").asInt()).isGreaterThanOrEqualTo(1);
+        assertThat(list.body().get("stuckAfterMinutes").asInt()).isEqualTo(15);
+        JsonNode ours = null;
+        for (JsonNode item : list.body().get("sagas")) {
+            if (item.get("payoutId").asText().equals("po_" + payoutId)) {
+                ours = item;
+            }
+        }
+        assertThat(ours).isNotNull();
+        assertThat(ours.get("reason").asText()).isEqualTo("PARKED");
+        assertThat(ours.get("state").asText()).isEqualTo("REQUIRES_ATTENTION");
+        assertThat(ours.get("stuckState").asText()).isEqualTo("SUBMITTING");
+        assertThat(ours.get("lastError").asText()).isNotBlank();
+        assertThat(saga.status()).isEqualTo(200);
+        assertThat(saga.body().get("stuckState").asText()).isEqualTo("SUBMITTING");
+        assertThat(retry.status()).isEqualTo(403);
+        assertThat(asMerchant.status()).isEqualTo(403);
+        assertThat(saga(payoutId).getState()).isEqualTo(SagaState.REQUIRES_ATTENTION);
+
+        stub.bankDown = false;
+        call(as(post("/api/v1/payouts/po_" + payoutId + "/saga/retry"), null, "payouts:operate"));
+        awaitPayout(payoutId, PayoutStatus.PAID);
+    }
+
+    @Test
+    void aSagaTooLongInAStepIsListedAsStuckButNotOneWaitingOnTheBankByDesign() throws Exception {
+        // the bank holds this transfer in transit: waiting there is the design, not a stuck step
+        UUID inTransit = payout(merchant("ba_test_slow", "20.00"), "20.00");
+        await().atMost(Duration.ofSeconds(15)).until(() -> List.of(SagaState.IN_TRANSIT, SagaState.REQUIRES_ATTENTION)
+                .contains(saga(inTransit).getState()));
+        // the ledger doesn't answer the hold: the saga stays in its first step
+        ledger().pauseReplies();
+        Reply everyStep;
+        Reply afterFifteenMinutes;
+        UUID holding;
+        try {
+            holding = payout(merchant("ba_test_ok", "20.00"), "20.00");
+            awaitSaga(holding, SagaState.HOLDING);
+
+            everyStep = call(as(get("/api/v1/payouts/sagas/attention").param("stuckMinutes", "0"), null, "payouts:operate"));
+            afterFifteenMinutes = call(as(get("/api/v1/payouts/sagas/attention"), null, "payouts:operate"));
+        } finally {
+            ledger().resumeReplies();
+        }
+
+        List<String> stuck = new java.util.ArrayList<>();
+        everyStep.body().get("sagas").forEach(item -> {
+            if (item.get("reason").asText().equals("STUCK")) {
+                stuck.add(item.get("payoutId").asText());
+            }
+        });
+        assertThat(stuck).contains("po_" + holding).doesNotContain("po_" + inTransit);
+        assertThat(everyStep.body().get("stuck").asInt()).isGreaterThanOrEqualTo(1);
+        assertThat(afterFifteenMinutes.body().get("sagas").toString()).doesNotContain(holding.toString());
+    }
+
+    @Test
     void aTransferStuckInTransitParksTheSagaAndResumesWhenTheBankPaysIt() throws Exception {
         UUID payoutId = payout(merchant("ba_test_slow", "20.00"), "20.00");
 

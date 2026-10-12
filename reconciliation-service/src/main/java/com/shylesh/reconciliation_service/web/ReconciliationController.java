@@ -27,7 +27,6 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/v1/reconciliation/runs")
 @RequiredArgsConstructor
-@PreAuthorize("hasAuthority(T(com.shylesh.reconciliation_service.security.SecurityConfig).RECONCILIATION_ADMIN)")
 public class ReconciliationController {
 
     private final ReconciliationService reconciliationService;
@@ -37,6 +36,7 @@ public class ReconciliationController {
 
     /** Runs of one day, newest first; without a date, the 20 most recent runs. */
     @GetMapping
+    @PreAuthorize("hasAnyAuthority(T(com.shylesh.reconciliation_service.security.SecurityConfig).RECONCILIATION_AUDIT, T(com.shylesh.reconciliation_service.security.SecurityConfig).RECONCILIATION_ADMIN)")
     public List<RunViews.RunSummary> runs(@RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
         List<ReconciliationRun> runs = date == null
                 ? runRepository.findAllByOrderByStartedAtDesc(Limit.of(20))
@@ -45,6 +45,7 @@ public class ReconciliationController {
     }
 
     @GetMapping("/{runId}")
+    @PreAuthorize("hasAnyAuthority(T(com.shylesh.reconciliation_service.security.SecurityConfig).RECONCILIATION_AUDIT, T(com.shylesh.reconciliation_service.security.SecurityConfig).RECONCILIATION_ADMIN)")
     public RunViews.RunDetail run(@PathVariable UUID runId) {
         ReconciliationRun run = runRepository.findById(runId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "No reconciliation run " + runId));
@@ -56,6 +57,7 @@ public class ReconciliationController {
      * as it has gone; the scheduler only reconciles days that are over.
      */
     @PostMapping
+    @PreAuthorize("hasAuthority(T(com.shylesh.reconciliation_service.security.SecurityConfig).RECONCILIATION_ADMIN)")
     public ResponseEntity<RunViews.RunDetail> trigger(@Valid @RequestBody RunViews.TriggerRequest request) {
         if (request.date().isAfter(LocalDate.now(clock))) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A day in the future can not be reconciled");

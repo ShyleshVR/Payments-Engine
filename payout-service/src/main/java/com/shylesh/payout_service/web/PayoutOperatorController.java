@@ -3,6 +3,7 @@ package com.shylesh.payout_service.web;
 import com.shylesh.payout_service.batch.DailyPayoutJob;
 import com.shylesh.payout_service.payout.PayoutStateException;
 import com.shylesh.payout_service.saga.PayoutOrchestrator;
+import com.shylesh.payout_service.web.PayoutViews.AttentionView;
 import com.shylesh.payout_service.web.PayoutViews.AuditView;
 import com.shylesh.payout_service.web.PayoutViews.BatchView;
 import com.shylesh.payout_service.web.PayoutViews.LookupRequest;
@@ -26,6 +27,9 @@ public class PayoutOperatorController {
 
     private final DailyPayoutJob job;
     private final PayoutOrchestrator orchestrator;
+    private static final int MAX_STUCK_MINUTES = 7 * 24 * 60;
+    private static final int MAX_ATTENTION_LIMIT = 200;
+
     private final PayoutQueries queries;
 
     /** Runs today's batch now (it only creates payouts that don't exist yet). 409 while another run holds the lock. */
@@ -42,8 +46,22 @@ public class PayoutOperatorController {
         return queries.batches(Math.max(1, Math.min(limit, 100)));
     }
 
+    /**
+     * Operator or auditor: the sagas that need a look. Parked ones (REQUIRES_ATTENTION), and
+     * running ones that have been in the same step for more than stuckMinutes (15, as the
+     * SagaStepStuck alert). The counts are complete; the list has the oldest of each kind.
+     */
+    @GetMapping("/sagas/attention")
+    @PreAuthorize("hasAnyAuthority(T(com.shylesh.payout_service.security.Scopes).PAYOUTS_AUDIT, T(com.shylesh.payout_service.security.Scopes).PAYOUTS_OPERATE)")
+    public AttentionView sagasNeedingAttention(@RequestParam(defaultValue = "15") int stuckMinutes,
+                                               @RequestParam(defaultValue = "50") int limit) {
+        return queries.sagasNeedingAttention(Math.max(0, Math.min(stuckMinutes, MAX_STUCK_MINUTES)),
+                Math.max(1, Math.min(limit, MAX_ATTENTION_LIMIT)));
+    }
+
+    /** Operator or auditor: reading a saga does not need the scope that can retry it. */
     @GetMapping("/{payoutId}/saga")
-    @PreAuthorize("hasAuthority(T(com.shylesh.payout_service.security.Scopes).PAYOUTS_OPERATE)")
+    @PreAuthorize("hasAnyAuthority(T(com.shylesh.payout_service.security.Scopes).PAYOUTS_AUDIT, T(com.shylesh.payout_service.security.Scopes).PAYOUTS_OPERATE)")
     public SagaView saga(@PathVariable String payoutId) {
         return queries.saga(PayoutQueries.parseId(payoutId));
     }

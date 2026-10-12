@@ -230,7 +230,7 @@ and reconciled 2,000 payments at a time, so a day of 2.75 million payments recon
 | Load (k6 in the cluster) | The highest rate that meets every SLO: 200 payments/s (420 requests/s), Payment → SUCCESS p95 2.2 s, 0 errors; a 30-minute soak and a 2× spike ([LOAD_TEST.md](LOAD_TEST.md)) |
 | Live cluster | Every test card end to end; processor outage under load; ledger scaled to zero; pods force-killed; rolling restarts under traffic; autoscaling under load; a reconciliation of every payment across three databases; a simulated incident in which each alert fired and resolved; injected corruption caught by the daily reconciliation |
 
-456 automated tests run in CI, along with the alert-rule tests. Results of the cluster runs are
+463 automated tests run in CI, along with the alert-rule tests. Results of the cluster runs are
 recorded in [DEPLOYMENT.md](DEPLOYMENT.md#testing), [SAGA.md](SAGA.md#cluster-verification),
 [DEPLOYMENT.md](DEPLOYMENT.md#verified-on-the-cluster) (alerts) and
 [RECONCILIATION.md](RECONCILIATION.md#on-the-cluster).

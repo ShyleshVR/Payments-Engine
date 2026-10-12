@@ -30,6 +30,8 @@ import java.util.List;
 public class SecurityConfig {
 
     public static final String RECONCILIATION_ADMIN = "SCOPE_reconciliation:admin";
+    /** Read-only: runs and their discrepancies, but not starting a run. */
+    public static final String RECONCILIATION_AUDIT = "SCOPE_reconciliation:audit";
 
     static final String[] PUBLIC_PATHS = {
             "/actuator/health", "/actuator/health/**", "/actuator/info", "/actuator/prometheus"

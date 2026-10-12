@@ -2,6 +2,7 @@ package com.shylesh.payment_service.saga;
 
 import jakarta.persistence.LockModeType;
 
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -54,6 +55,44 @@ public interface PaymentSagaRepository extends JpaRepository<PaymentSaga, UUID> 
                                   com.shylesh.payment_service.saga.SagaState.REQUIRES_ATTENTION)
             """)
     LocalDateTime findOldestStepStartInProgress(@Param("type") SagaType type);
+
+    // The four queries below read only unfinished sagas (finishedAt IS NULL), which the index
+    // uq_payment_saga_active covers: their cost follows the sagas in flight, not the table.
+
+    /** Parked for an operator, longest first. */
+    @Query("""
+            SELECT s FROM PaymentSaga s
+            WHERE s.finishedAt IS NULL AND s.state = com.shylesh.payment_service.saga.SagaState.REQUIRES_ATTENTION
+            ORDER BY s.stepStartedAt
+            """)
+    List<PaymentSaga> findParked(Limit limit);
+
+    @Query("""
+            SELECT COUNT(s) FROM PaymentSaga s
+            WHERE s.finishedAt IS NULL AND s.state = com.shylesh.payment_service.saga.SagaState.REQUIRES_ATTENTION
+            """)
+    long countParked();
+
+    /**
+     * Running sagas whose current step started before the given time, oldest first. As for the
+     * oldest-step gauge, a saga waiting for the merchant's capture is not "in a step".
+     */
+    @Query("""
+            SELECT s FROM PaymentSaga s
+            WHERE s.finishedAt IS NULL AND s.stepStartedAt < :before
+              AND s.state NOT IN (com.shylesh.payment_service.saga.SagaState.AWAITING_CAPTURE,
+                                  com.shylesh.payment_service.saga.SagaState.REQUIRES_ATTENTION)
+            ORDER BY s.stepStartedAt
+            """)
+    List<PaymentSaga> findInStepSince(@Param("before") LocalDateTime before, Limit limit);
+
+    @Query("""
+            SELECT COUNT(s) FROM PaymentSaga s
+            WHERE s.finishedAt IS NULL AND s.stepStartedAt < :before
+              AND s.state NOT IN (com.shylesh.payment_service.saga.SagaState.AWAITING_CAPTURE,
+                                  com.shylesh.payment_service.saga.SagaState.REQUIRES_ATTENTION)
+            """)
+    long countInStepSince(@Param("before") LocalDateTime before);
 
     @Query("SELECT s.paymentId FROM PaymentSaga s WHERE s.finishedAt IS NULL AND s.paymentId IN :paymentIds")
     List<UUID> findPaymentIdsWithActiveSaga(@Param("paymentIds") java.util.Collection<UUID> paymentIds);

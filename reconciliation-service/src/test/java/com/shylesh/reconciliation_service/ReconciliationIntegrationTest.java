@@ -370,6 +370,25 @@ class ReconciliationIntegrationTest {
     }
 
     @Test
+    void anAuditorCanReadRunsButNotStartOne() throws Exception {
+        aDayWithProblems();
+        JsonNode started = objectMapper.readTree(trigger("2026-10-08", "SCOPE_reconciliation:admin").getResponse().getContentAsString());
+        String runId = started.at("/run/runId").asText();
+        var auditor = jwt().authorities(new SimpleGrantedAuthority("SCOPE_reconciliation:audit"));
+
+        MvcResult list = mockMvc.perform(get("/api/v1/reconciliation/runs").param("date", "2026-10-08").with(auditor)).andReturn();
+        MvcResult detail = mockMvc.perform(get("/api/v1/reconciliation/runs/" + runId).with(auditor)).andReturn();
+        int startedByAuditor = trigger("2026-10-08", "SCOPE_reconciliation:audit").getResponse().getStatus();
+        int runsBefore = runRepository.findByBusinessDateOrderByStartedAtDesc(LocalDate.of(2026, 10, 8)).size();
+
+        assertThat(list.getResponse().getStatus()).isEqualTo(200);
+        assertThat(detail.getResponse().getStatus()).isEqualTo(200);
+        assertThat(objectMapper.readTree(detail.getResponse().getContentAsString()).get("discrepancies")).hasSize(2);
+        assertThat(startedByAuditor).isEqualTo(403);
+        assertThat(runRepository.findByBusinessDateOrderByStartedAtDesc(LocalDate.of(2026, 10, 8))).hasSize(runsBefore);
+    }
+
+    @Test
     void aDayAlreadyBeingReconciledIsAConflict() throws Exception {
         runRepository.saveAndFlush(ReconciliationRun.start(LocalDate.of(2026, 9, 20), RunTrigger.SCHEDULED,
                 java.time.LocalDateTime.ofInstant(NOW, ZoneOffset.UTC)));

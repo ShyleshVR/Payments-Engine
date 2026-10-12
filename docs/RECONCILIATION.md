@@ -233,13 +233,14 @@ returned the file to 0 bytes three and a half minutes after the run.
 
 ## Operator API
 
-Through the gateway, scope `reconciliation:admin` (granted to the operator client):
+Through the gateway. Reading needs `reconciliation:admin` (the operator client) or the read-only
+`reconciliation:audit`; starting a run needs `reconciliation:admin`.
 
-| | |
-|---|---|
-| `GET /api/v1/reconciliation/runs?date=2026-10-08` | That day's runs, newest first (without `date`: the 20 most recent) |
-| `GET /api/v1/reconciliation/runs/{id}` | A run with its discrepancies |
-| `POST /api/v1/reconciliation/runs {"date":"2026-10-08"}` | Reconcile a day now. `201` with the result; `409` if that day is being reconciled; `400` for a future day |
+| | | Scope |
+|---|---|---|
+| `GET /api/v1/reconciliation/runs?date=2026-10-08` | That day's runs, newest first (without `date`: the 20 most recent) | admin or audit |
+| `GET /api/v1/reconciliation/runs/{id}` | A run with its discrepancies | admin or audit |
+| `POST /api/v1/reconciliation/runs {"date":"2026-10-08"}` | Reconcile a day now. `201` with the result; `409` if that day is being reconciled; `400` for a future day | admin |
 
 ```json
 {"run": {"businessDate": "2026-10-08", "trigger": "SCHEDULED", "status": "COMPLETED",
