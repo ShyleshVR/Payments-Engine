@@ -60,6 +60,9 @@ public class ProcessorClient {
                 .defaultHeader("X-Api-Key", properties.apiKey())
                 .build();
         this.circuitBreaker = circuitBreakerRegistry.circuitBreaker("processor");
+        // Each change of state, once: the calls it refuses while open are not logged one by one.
+        this.circuitBreaker.getEventPublisher().onStateTransition(event ->
+                log.warn("Processor circuit breaker changed state: {}", event.getStateTransition()));
         this.objectMapper = objectMapper;
         this.meterRegistry = meterRegistry;
     }
@@ -116,6 +119,9 @@ public class ProcessorClient {
             });
         } catch (ProcessorUnavailableException e) {
             response = e.response();
+            // The saga retries with the same key, so nothing is lost; this line says why the call
+            // failed (a 5xx, a timeout, no connection at all), which no metric does.
+            log.warn("Processor call got no answer to trust: operation={}, {}", operation, response.describe());
         } catch (CallNotPermittedException e) {
             response = ProcessorResponse.unknown("circuit_open", "Processor circuit breaker is open");
         }
