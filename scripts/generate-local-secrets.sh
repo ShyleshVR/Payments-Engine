@@ -33,6 +33,7 @@ ensure secrets/auth.env processor-api-key
 ensure secrets/auth.env reconciliation-client-secret
 ensure secrets/auth.env payout-client-secret
 ensure secrets/auth.env incident-agent-client-secret
+ensure secrets/auth.env incident-agent-operator-client-secret
 
 if [ "${1:-}" = "--agent" ] && [ ! -f secrets/incident-agent-token ]; then
   # one line, no newline: Alertmanager sends the file's content as the bearer token
