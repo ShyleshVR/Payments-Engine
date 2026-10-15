@@ -365,6 +365,13 @@ down, it suppresses that service's warnings. Resolved notifications are sent too
   `k8s/overlays/local/secrets/slack-webhook-url` and run `scripts/k8s-up.sh`. It then deploys the
   `local-slack` overlay, and every alert also goes to Slack. Without that file, nothing leaves
   the cluster.
+- **Incident agent (optional).** `scripts/generate-local-secrets.sh --agent` creates
+  `k8s/overlays/local/secrets/incident-agent-token`; `scripts/k8s-up.sh` then deploys the
+  `local-agent` overlay (`local-slack-agent` with Slack as well), and every alert also goes to the
+  incident agent ([payflow-incident-agent](https://github.com/ShyleshVR/payflow-incident-agent),
+  run on this machine with `payflow-agent serve`), which investigates it with its own model. The
+  token is sent as a bearer token; the agent has the same value in its `.env`. Alertmanager
+  reaches it at `host.docker.internal:8092`, even while the agent listens only on 127.0.0.1.
 - **Tested rules.** `alerts.test.yml` checks every rule with `promtool test rules`: each fires
   when it should, after its `for` duration, with the right labels and summary, and stays silent
   otherwise. CI runs it, together with `amtool check-config` on the Alertmanager configuration.
@@ -603,6 +610,7 @@ get 503.
 | `k8s/base/observability/alertmanager.yml`, `alert_sink.py` | Routing, inhibition and the in-cluster receiver |
 | `k8s/overlays/local/` | Image tags, generated Secrets, LoadBalancer UIs, webhook dev settings |
 | `k8s/overlays/local-slack/` | `local` plus a Slack receiver, used when `secrets/slack-webhook-url` exists |
+| `k8s/overlays/local-agent/`, `local-slack-agent/`, `k8s/components/incident-agent/` | Every alert also to the incident agent, used when `secrets/incident-agent-token` exists |
 | `payout-service/` | Payouts: `saga/` (state machine, orchestrator, worker), `batch/` (daily job, ShedLock), `payout/` (payouts, destinations), `client/` (bank, ledger), `web/` |
 | `scripts/build-images.sh` | `mvn package` + `docker build` per service |
 | `scripts/generate-local-secrets.sh` | Random passwords and the signing key, created once |

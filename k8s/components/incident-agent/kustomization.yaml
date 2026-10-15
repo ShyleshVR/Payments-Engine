@@ -1,0 +1,25 @@
+# Gives Alertmanager the incident agent's token, for the overlays that send alerts to the agent
+# (local-agent, local-slack-agent). The token is k8s/overlays/local/secrets/incident-agent-token,
+# created by scripts/generate-local-secrets.sh --agent; the agent has the same value in its .env.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+secretGenerator:
+  - name: alertmanager-agent
+    files:
+      - token=../../overlays/local/secrets/incident-agent-token
+
+patches:
+  - target: { kind: Deployment, name: alertmanager }
+    patch: |-
+      # Alertmanager runs as nobody (65534): the token file is readable by its owner and group
+      # only (0440), so the pod's files get that group.
+      - op: add
+        path: /spec/template/spec/securityContext
+        value: { fsGroup: 65534 }
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value: { name: agent, secret: { secretName: alertmanager-agent, defaultMode: 0440 } }
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: { name: agent, mountPath: /etc/alertmanager/agent, readOnly: true }
