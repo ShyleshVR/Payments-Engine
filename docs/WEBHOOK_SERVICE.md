@@ -46,7 +46,7 @@ Migrations: [webhook-service/src/main/resources/db/migration/](../webhook-servic
 | `merchant_webhook_subscriptions` | Where to send a merchant's events, and the signing secret | One **active** row per merchant, enforced by a partial unique index. Unsubscribing keeps the row (`active = false`, `deactivated_at` set) as an audit trail for its deliveries. |
 | `webhook_deliveries` | One row per (event, merchant); the unit of work | `UNIQUE (event_id, merchant_id)`. `payload` stores the exact JSON body, rendered once, so every retry sends identical bytes. Also holds `status`, `attempt_count`, `next_attempt_at`, `last_error`, `version` (optimistic lock) and `dlt_published_at`. |
 | `webhook_delivery_attempts` | One row per HTTP attempt | `response_code` (null when no response was received), `error_message`, `duration_ms`, `attempted_at`. |
-| `processed_events` | Each Kafka event is handled once | Same pattern as ledger-service and notification-service. |
+| `processed_events` | **Each Kafka event is handled once** | Same pattern as ledger-service and notification-service. |
 
 Delivery statuses:
 
