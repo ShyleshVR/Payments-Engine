@@ -447,6 +447,15 @@ These runs exposed four problems, all fixed:
    rejection, compare the ledger's postings.
 3. `POST /api/v1/payments/{id}/saga/retry` resumes the step under the same idempotency key.
 
+With the incident agent (the `local-agent` overlay), the agent investigates this alert and
+proposes retrying the sagas that parked because no answer came (a capture, void, refund or
+transfer the processor or bank never answered). Once a person approves (`payflow-agent approve`),
+it retries exactly those, one at a time, through its own `incident-agent-operator` login. Before
+each retry it checks again that the saga is still parked and the partner answers. It then
+watches them finish. A saga a partner or the ledger refused is left to a person: the same request
+would be refused again. See the agent's
+[ARCHITECTURE](https://github.com/ShyleshVR/payflow-incident-agent/blob/main/docs/ARCHITECTURE.md).
+
 **SagaStepStuck**
 1. Check `ProcessorCircuitOpen` and `KafkaConsumerLag`. A step only waits on the processor or the
    ledger.
