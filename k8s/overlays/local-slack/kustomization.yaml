@@ -23,6 +23,12 @@ secretGenerator:
 patches:
   - target: { kind: Deployment, name: alertmanager }
     patch: |-
+      # Alertmanager runs as nobody (65534): the URL file is readable by its owner and group only
+      # (0440), so the pod's files get that group. Without it the file cannot be read and no
+      # notification reaches Slack.
+      - op: add
+        path: /spec/template/spec/securityContext
+        value: { fsGroup: 65534 }
       - op: add
         path: /spec/template/spec/volumes/-
         value: { name: slack, secret: { secretName: alertmanager-slack, defaultMode: 0440 } }

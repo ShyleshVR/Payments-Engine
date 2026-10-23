@@ -1,0 +1,20 @@
+# The local overlay plus the incident agent: every alert also goes to the agent, which runs on
+# this machine beside its model (D:\payflow-incident-agent, `payflow-agent serve`). scripts/k8s-up.sh
+# uses it only when k8s/overlays/local/secrets/incident-agent-token exists
+# (scripts/generate-local-secrets.sh --agent); with a Slack URL as well, local-slack-agent.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: payflow
+
+resources:
+  - ../local
+
+components:
+  - ../../components/incident-agent
+
+configMapGenerator:
+  - name: alertmanager-config
+    behavior: replace
+    files:
+      - alertmanager.yml

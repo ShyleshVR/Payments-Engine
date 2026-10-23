@@ -82,6 +82,19 @@ class MerchantRegisteredClientRepositoryTest {
     }
 
     @Test
+    void theAgentsOperatorLoginCanRetrySagasAndNothingElse() {
+        // the incident agent's second login, as application.yaml configures it
+        MerchantRegisteredClientRepository withOperator = new MerchantRegisteredClientRepository(credentialRepository,
+                merchantRepository, withServiceClient(new AuthProperties.ServiceClient("incident-agent-operator", "operator-secret",
+                        java.util.Set.of("payments:operate", "payouts:operate"))), passwordEncoder);
+
+        RegisteredClient client = withOperator.findByClientId("incident-agent-operator");
+
+        assertThat(client.getScopes()).containsExactlyInAnyOrder("payments:operate", "payouts:operate");
+        assertThat(client.getScopes()).doesNotContain("ledger:admin", "reconciliation:admin", "merchants:admin");
+    }
+
+    @Test
     void serviceClientWithoutASecretIsNotRegistered() {
         assertThat(repository.findByClientId("not-deployed")).isNull();
     }

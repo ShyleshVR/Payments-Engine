@@ -15,12 +15,18 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.math.BigDecimal;
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
+import java.net.http.HttpConnectTimeoutException;
+import java.net.http.HttpTimeoutException;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.UnresolvedAddressException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
@@ -112,7 +118,9 @@ class ProcessorClientTest {
             assertThat(unanswered.outcome()).isEqualTo(ProcessorResponse.Outcome.UNKNOWN);
             assertThat(output.getOut()).contains(
                     "Processor call got no answer to trust: operation=authorize, UNKNOWN 503 processor_unavailable: Simulated outage",
-                    "Processor call got no answer to trust: operation=capture, UNKNOWN unreachable: ConnectException");
+                    "Processor call got no answer to trust: operation=capture, UNKNOWN unreachable: ");
+            // the reason in words, then the exceptions: a refused connection is named as one, whatever the platform says
+            assertThat(unanswered.message()).startsWith("the connection was refused (ConnectException");
         } finally {
             failing.stop(0);
         }
@@ -134,6 +142,35 @@ class ProcessorClientTest {
         assertThat(output.getOut()).containsOnlyOnce("Processor circuit breaker changed state: State transition from CLOSED to OPEN");
         // the two calls that were sent are logged; the four the breaker refused are not
         assertThat(output.getOut().split("Processor call got no answer to trust", -1)).hasSize(3);
+    }
+
+    @Test
+    void aFailedConnectionIsDescribedByItsDeepestCauseNotByTheJdksEmptyMessage() {
+        // the chains the JDK's HTTP client produces, wrapped as Spring wraps them
+        assertThat(ProcessorClient.describeFailure(wrapped(new ConnectException(), new UnresolvedAddressException())))
+                .isEqualTo("the processor's host name could not be resolved (ConnectException, caused by UnresolvedAddressException)");
+        assertThat(ProcessorClient.describeFailure(wrapped(new ConnectException(), new ClosedChannelException())))
+                .isEqualTo("the connection was refused (ConnectException, caused by ClosedChannelException)");
+        assertThat(ProcessorClient.describeFailure(wrapped(new ConnectException("Connection refused"), null)))
+                .isEqualTo("the connection was refused (ConnectException)");
+        assertThat(ProcessorClient.describeFailure(wrapped(new HttpConnectTimeoutException("HTTP connect timed out"), null)))
+                .isEqualTo("no connection within the connect timeout (HttpConnectTimeoutException)");
+        // as seen on the cluster with the processor scaled to zero: a timeout, though its cause is a ConnectException
+        assertThat(ProcessorClient.describeFailure(wrapped(new HttpConnectTimeoutException("HTTP connect timed out"),
+                new ConnectException("HTTP connect timed out"))))
+                .isEqualTo("no connection within the connect timeout (HttpConnectTimeoutException, caused by ConnectException)");
+        assertThat(ProcessorClient.describeFailure(wrapped(new HttpTimeoutException("request timed out"), null)))
+                .isEqualTo("no answer within the timeout (HttpTimeoutException)");
+        // anything else keeps every exception's own message
+        assertThat(ProcessorClient.describeFailure(wrapped(new java.io.IOException("stream closed"), new IllegalStateException("half-closed"))))
+                .isEqualTo("IOException: stream closed, caused by IllegalStateException: half-closed");
+    }
+
+    private static RuntimeException wrapped(java.io.IOException failure, Throwable cause) {
+        if (cause != null) {
+            failure.initCause(cause);
+        }
+        return new ResourceAccessException("I/O error on POST request for \"http://processor\": null", failure);
     }
 
     private static ProcessorClient clientFor(String baseUrl, CircuitBreakerRegistry breakers) {

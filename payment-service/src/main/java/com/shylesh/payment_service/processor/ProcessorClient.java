@@ -18,7 +18,15 @@ import org.springframework.web.client.RestClient;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.net.ConnectException;
 import java.net.http.HttpClient;
+import java.net.http.HttpConnectTimeoutException;
+import java.net.http.HttpTimeoutException;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.UnresolvedAddressException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -146,10 +154,44 @@ public class ProcessorClient {
                     response.getStatusCode().value(),
                     new String(response.getBody().readAllBytes(), StandardCharsets.UTF_8)));
         } catch (RuntimeException e) {
-            // timeouts and connection failures arrive wrapped (ResourceAccessException)
-            Throwable cause = e.getCause() instanceof IOException ? e.getCause() : e;
-            return ProcessorResponse.unknown("unreachable", cause.getClass().getSimpleName() + ": " + cause.getMessage());
+            return ProcessorResponse.unknown("unreachable", describeFailure(e));
         }
+    }
+
+    /**
+     * Why a call got no answer, in words, then the exceptions it came from. The JDK's HTTP client
+     * reports a refused connection and an unknown host alike as "ConnectException: null"; the
+     * difference is in the deepest cause. A timeout is named first wherever it is in the chain: a
+     * connect timeout arrives as an HttpConnectTimeoutException caused by a ConnectException.
+     */
+    static String describeFailure(Throwable failure) {
+        // Spring wraps the I/O failure (ResourceAccessException); the chain worth naming starts below it
+        Throwable start = failure.getCause() instanceof IOException ? failure.getCause() : failure;
+        List<Throwable> chain = new ArrayList<>();
+        for (Throwable t = start; t != null && !chain.contains(t); t = t.getCause()) {
+            chain.add(t);
+        }
+        Throwable root = chain.get(chain.size() - 1);
+        boolean connecting = chain.stream().anyMatch(ConnectException.class::isInstance);
+        String reason;
+        if (chain.stream().anyMatch(HttpConnectTimeoutException.class::isInstance)) {
+            reason = "no connection within the connect timeout";
+        } else if (chain.stream().anyMatch(HttpTimeoutException.class::isInstance)) {
+            reason = "no answer within the timeout";
+        } else if (root instanceof UnresolvedAddressException) {
+            reason = "the processor's host name could not be resolved";
+        } else if (connecting && (root instanceof ClosedChannelException || root instanceof ConnectException)) {
+            reason = "the connection was refused";
+        } else {
+            reason = null;
+        }
+        String names = chain.stream().map(t -> t.getClass().getSimpleName()).collect(Collectors.joining(", caused by "));
+        if (reason != null) {
+            return reason + " (" + names + ")";
+        }
+        // something not foreseen: every exception with its own message
+        return chain.stream().map(t -> t.getClass().getSimpleName() + (t.getMessage() != null ? ": " + t.getMessage() : ""))
+                .collect(Collectors.joining(", caused by "));
     }
 
     private ProcessorResponse toResponse(int status, String body) {

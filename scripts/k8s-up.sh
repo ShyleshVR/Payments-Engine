@@ -6,10 +6,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 NAMESPACE=payflow
-# Slack alerts only when you have put a Slack incoming-webhook URL in this file.
+# Slack alerts only when you have put a Slack incoming-webhook URL in this file; alerts to the
+# incident agent only when its token exists (scripts/generate-local-secrets.sh --agent).
+SECRETS=k8s/overlays/local/secrets
 OVERLAY=k8s/overlays/local
-if [ -f k8s/overlays/local/secrets/slack-webhook-url ]; then
+if [ -f $SECRETS/slack-webhook-url ] && [ -f $SECRETS/incident-agent-token ]; then
+  OVERLAY=k8s/overlays/local-slack-agent
+elif [ -f $SECRETS/slack-webhook-url ]; then
   OVERLAY=k8s/overlays/local-slack
+elif [ -f $SECRETS/incident-agent-token ]; then
+  OVERLAY=k8s/overlays/local-agent
 fi
 METRICS_SERVER_VERSION=v0.7.2
 

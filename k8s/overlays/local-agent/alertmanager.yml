@@ -1,0 +1,35 @@
+# Same as k8s/base/observability/alertmanager.yml, plus the incident agent: every alert goes to
+# the agent and to alert-sink. Keep in step with the base file and with local-slack-agent's.
+route:
+  receiver: alert-sink
+  group_by: [alertname, job, application]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+  routes:
+    # every alert, including those the agent has no runbook for (it records them as such)
+    - receiver: incident-agent
+      matchers: [alertname =~ ".+"]
+      continue: true
+    - receiver: alert-sink
+      matchers: [alertname =~ ".+"]
+
+inhibit_rules:
+  - source_matchers: [alertname = ServiceDown]
+    target_matchers: [severity = warning]
+    equal: [job]
+
+receivers:
+  - name: alert-sink
+    webhook_configs:
+      - url: http://alert-sink:9095/alerts
+        send_resolved: true
+  - name: incident-agent
+    webhook_configs:
+      # the agent on this machine (Docker Desktop's name for the host); it may listen on 127.0.0.1
+      - url: http://host.docker.internal:8092/alerts
+        send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /etc/alertmanager/agent/token

@@ -365,6 +365,13 @@ down, it suppresses that service's warnings. Resolved notifications are sent too
   `k8s/overlays/local/secrets/slack-webhook-url` and run `scripts/k8s-up.sh`. It then deploys the
   `local-slack` overlay, and every alert also goes to Slack. Without that file, nothing leaves
   the cluster.
+- **Incident agent (optional).** `scripts/generate-local-secrets.sh --agent` creates
+  `k8s/overlays/local/secrets/incident-agent-token`; `scripts/k8s-up.sh` then deploys the
+  `local-agent` overlay (`local-slack-agent` with Slack as well), and every alert also goes to the
+  incident agent ([payflow-incident-agent](https://github.com/ShyleshVR/payflow-incident-agent),
+  run on this machine with `payflow-agent serve`), which investigates it with its own model. The
+  token is sent as a bearer token; the agent has the same value in its `.env`. Alertmanager
+  reaches it at `host.docker.internal:8092`, even while the agent listens only on 127.0.0.1.
 - **Tested rules.** `alerts.test.yml` checks every rule with `promtool test rules`: each fires
   when it should, after its `for` duration, with the right labels and summary, and stays silent
   otherwise. CI runs it, together with `amtool check-config` on the Alertmanager configuration.
@@ -439,6 +446,15 @@ These runs exposed four problems, all fixed:
 2. Fix the cause: for a capture whose outcome was never learned, ask the processor; for a ledger
    rejection, compare the ledger's postings.
 3. `POST /api/v1/payments/{id}/saga/retry` resumes the step under the same idempotency key.
+
+With the incident agent (the `local-agent` overlay), the agent investigates this alert and
+proposes retrying the sagas that parked because no answer came (a capture, void, refund or
+transfer the processor or bank never answered). Once a person approves (`payflow-agent approve`),
+it retries exactly those, one at a time, through its own `incident-agent-operator` login. Before
+each retry it checks again that the saga is still parked and the partner answers. It then
+watches them finish. A saga a partner or the ledger refused is left to a person: the same request
+would be refused again. See the agent's
+[ARCHITECTURE](https://github.com/ShyleshVR/payflow-incident-agent/blob/main/docs/ARCHITECTURE.md).
 
 **SagaStepStuck**
 1. Check `ProcessorCircuitOpen` and `KafkaConsumerLag`. A step only waits on the processor or the
@@ -603,6 +619,7 @@ get 503.
 | `k8s/base/observability/alertmanager.yml`, `alert_sink.py` | Routing, inhibition and the in-cluster receiver |
 | `k8s/overlays/local/` | Image tags, generated Secrets, LoadBalancer UIs, webhook dev settings |
 | `k8s/overlays/local-slack/` | `local` plus a Slack receiver, used when `secrets/slack-webhook-url` exists |
+| `k8s/overlays/local-agent/`, `local-slack-agent/`, `k8s/components/incident-agent/` | Every alert also to the incident agent, used when `secrets/incident-agent-token` exists |
 | `payout-service/` | Payouts: `saga/` (state machine, orchestrator, worker), `batch/` (daily job, ShedLock), `payout/` (payouts, destinations), `client/` (bank, ledger), `web/` |
 | `scripts/build-images.sh` | `mvn package` + `docker build` per service |
 | `scripts/generate-local-secrets.sh` | Random passwords and the signing key, created once |

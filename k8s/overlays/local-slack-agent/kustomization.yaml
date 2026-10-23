@@ -1,0 +1,19 @@
+# The local-slack overlay plus the incident agent: every alert goes to Slack, to the agent and to
+# alert-sink. scripts/k8s-up.sh uses it when both secrets/slack-webhook-url and
+# secrets/incident-agent-token exist in k8s/overlays/local.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: payflow
+
+resources:
+  - ../local-slack
+
+components:
+  - ../../components/incident-agent
+
+configMapGenerator:
+  - name: alertmanager-config
+    behavior: replace
+    files:
+      - alertmanager.yml
