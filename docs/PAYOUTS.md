@@ -156,7 +156,7 @@ Through the gateway, `/api/v1/payouts/**`. Payout ids are `po_<uuid>`.
 | `GET /destination` | `payouts:read` or `payouts:write` | |
 | `GET /balance?currency` | `payouts:read` | `{payable, cutoff}` |
 | `POST /` | `payouts:write` | Instant payout (see above) |
-| `GET /`, `GET /{id}` | `payouts:read` | The merchant's own payouts (another merchant's: 404); an operator (`payouts:operate`) sees all |
+| `GET /`, `GET /{id}` | `payouts:read` | The merchant's own payouts (another merchant's: 404); an operator (`payouts:operate`) or an auditor (`payouts:audit`, read-only: the incident agent) sees all |
 | `POST /batches`, `GET /batches` | `payouts:operate` | Run today's batch now (`409` while another run holds the lock); batch history |
 | `GET /sagas/attention` | `payouts:operate` or `payouts:audit` | The sagas that need a look: parked ones, and running ones in the same step for more than `stuckMinutes` (default 15). Waiting on the bank (in transit, return window) is not stuck |
 | `GET /{id}/saga` | `payouts:operate` or `payouts:audit` | A payout's saga and step history |
@@ -235,6 +235,9 @@ covers payout-service.
    - **`invalid_account` / `account_closed`:** the merchant's details are wrong. Contact them
      and update their destination.
    - **Many returns at once:** a bank-side problem.
+   - With the incident agent (the `local-agent` overlay), the agent investigates `PayoutsFailing`
+     through its read-only login (`payouts:audit`) and reports the failures by code; its proposal
+     (contact the merchants, ask the bank) is for a person to take.
 2. The money is already back in the merchants' balances; the next batch pays it again once the
    destination is fixed.
 

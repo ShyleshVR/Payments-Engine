@@ -444,7 +444,8 @@ These runs exposed four problems, all fixed:
 1. `GET /api/v1/payments/{id}/saga` (operator token) shows where the saga stopped and why
    (`lastError`, step history).
 2. Fix the cause: for a capture whose outcome was never learned, ask the processor; for a ledger
-   rejection, compare the ledger's postings.
+   rejection, compare the ledger's postings (the ledger logs each posting it refuses at WARN:
+   "Ledger command refused ... reason=...").
 3. `POST /api/v1/payments/{id}/saga/retry` resumes the step under the same idempotency key.
 
 With the incident agent (the `local-agent` overlay), the agent investigates this alert and

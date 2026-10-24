@@ -99,8 +99,15 @@ public class LedgerCommandHandler {
                 .build());
         enqueueReply(reply);
         count(command, reply, false);
-        log.info("Handled ledger command. commandId={}, type={}, subject={}, outcome={}, reason={}",
-                command.getCommandId(), command.getCommandType(), command.subjectId(), reply.outcome(), reply.reason());
+        if (LedgerReply.REJECTED.equals(reply.outcome())) {
+            // A business answer, not an error, but one a saga parks on (a ledger refusal needs a
+            // person): at WARN, so that whoever reads the ledger's warnings and errors sees it.
+            log.warn("Ledger command refused. commandId={}, type={}, subject={}, reason={}",
+                    command.getCommandId(), command.getCommandType(), command.subjectId(), reply.reason());
+        } else {
+            log.info("Handled ledger command. commandId={}, type={}, subject={}, outcome={}",
+                    command.getCommandId(), command.getCommandType(), command.subjectId(), reply.outcome());
+        }
         return reply;
     }
 

@@ -87,7 +87,7 @@ given a merchant scope:
 | `reconciliation-service` | `ledger:admin`, `payments:audit`, `payouts:audit` | reading the sources of the daily reconciliation |
 | `payout-service` | `ledger:admin` | reading payable balances |
 | `incident-agent` | `payments:audit`, `payouts:audit`, `reconciliation:audit` | the incident-investigation agent (a separate project): it can look at sagas and reconciliation runs, and can retry or start nothing |
-| `incident-agent-operator` | `payments:operate`, `payouts:operate` | the same agent, only to carry out what a person approved: retrying a parked payment or payout saga. Its secret is held by the agent's service alone, never by its read-only tools |
+| `incident-agent-operator` | `payments:operate`, `payouts:operate`, `reconciliation:admin` | the same agent, only to carry out what a person approved: retrying a parked payment or payout saga, or running a failed day's reconciliation again. Its secret is held by the agent's service alone, never by its read-only tools |
 
 Processing outcomes are not anyone's to set: the payment saga drives authorization, capture and
 settlement against the card processor and the ledger (see [SAGA.md](SAGA.md)). The operator

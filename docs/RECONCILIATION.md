@@ -293,6 +293,14 @@ re-run clean, or after 7 days, by which time it has been paged on for a week.
 2. Check `ServiceDown`, `InstanceDown` and the reconciliation-service logs.
 3. Once the source is back, the hourly catch-up retries automatically; or trigger a run manually.
 
+With the incident agent (the `local-agent` overlay), the agent investigates `ReconciliationRunFailed`,
+names the source that failed, and proposes running the failed days again. Its code picks the days
+(only those no run has reconciled, and not one that has failed 3 times: that needs a person). Once
+a person approves (`payflow-agent approve`), it checks each day again (still not reconciled, the
+source healthy), runs it through its `incident-agent-operator` login (scope `reconciliation:admin`),
+and reports how each run ended. See the agent's
+[ARCHITECTURE](https://github.com/ShyleshVR/payflow-incident-agent/blob/main/docs/ARCHITECTURE.md).
+
 ## Configuration
 
 `payflow.reconciliation.*`:

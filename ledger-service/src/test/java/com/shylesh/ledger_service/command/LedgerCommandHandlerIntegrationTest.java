@@ -14,8 +14,11 @@ import com.shylesh.ledger_service.persistence.LedgerTransactionRepository;
 import com.shylesh.ledger_service.service.LedgerQueryService;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -148,6 +151,20 @@ class LedgerCommandHandlerIntegrationTest {
         assertThat(second.outcome()).isEqualTo(LedgerReply.SUCCEEDED);
         assertThat(second.transactionId()).isEqualTo(first.transactionId());
         assertThat(balance(merchantId).getBalance()).isEqualByComparingTo("10.00");
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void aRefusalIsLoggedAsAWarningWithItsReasonAndASuccessIsNot(CapturedOutput output) {
+        UUID merchantId = merchantWithBalance("50.00");
+
+        handler.handle(command(LedgerCommandType.HOLD_REFUND, UUID.randomUUID(), UUID.randomUUID(), merchantId, "50.01"));
+        handler.handle(command(LedgerCommandType.HOLD_REFUND, UUID.randomUUID(), UUID.randomUUID(), merchantId, "10.00"));
+
+        assertThat(output.getOut()).containsPattern(
+                "WARN .*Ledger command refused\\. commandId=\\S+, type=HOLD_REFUND, subject=\\S+, reason=" + LedgerCommandHandler.INSUFFICIENT_FUNDS);
+        assertThat(output.getOut()).containsPattern("INFO .*Handled ledger command\\. .*type=HOLD_REFUND, .*outcome=SUCCEEDED");
+        assertThat(output.getOut()).doesNotContainPattern("WARN .*Handled ledger command");
     }
 
     @Test

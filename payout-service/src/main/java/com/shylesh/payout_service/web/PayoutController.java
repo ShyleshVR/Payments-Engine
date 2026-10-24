@@ -79,9 +79,9 @@ public class PayoutController {
                 .body(PayoutView.of(result.payout()));
     }
 
-    /** The merchant's payouts, newest first; for an operator, everyone's. */
+    /** The merchant's payouts, newest first; for an operator or an auditor (read-only), everyone's. */
     @GetMapping
-    @PreAuthorize("hasAnyAuthority(T(com.shylesh.payout_service.security.Scopes).PAYOUTS_READ, T(com.shylesh.payout_service.security.Scopes).PAYOUTS_OPERATE)")
+    @PreAuthorize("hasAnyAuthority(T(com.shylesh.payout_service.security.Scopes).PAYOUTS_READ, T(com.shylesh.payout_service.security.Scopes).PAYOUTS_OPERATE, T(com.shylesh.payout_service.security.Scopes).PAYOUTS_AUDIT)")
     public List<PayoutView> list(@RequestParam(defaultValue = "20") int limit, Authentication authentication) {
         int bounded = Math.max(1, Math.min(limit, MAX_LIST));
         return operator(authentication)
@@ -89,9 +89,9 @@ public class PayoutController {
                 : queries.own(CurrentMerchantArgumentResolver.merchantId(authentication), bounded);
     }
 
-    /** A merchant sees only its own payouts (404 for anyone else's); an operator sees any. */
+    /** A merchant sees only its own payouts (404 for anyone else's); an operator or an auditor sees any. */
     @GetMapping("/{payoutId}")
-    @PreAuthorize("hasAnyAuthority(T(com.shylesh.payout_service.security.Scopes).PAYOUTS_READ, T(com.shylesh.payout_service.security.Scopes).PAYOUTS_OPERATE)")
+    @PreAuthorize("hasAnyAuthority(T(com.shylesh.payout_service.security.Scopes).PAYOUTS_READ, T(com.shylesh.payout_service.security.Scopes).PAYOUTS_OPERATE, T(com.shylesh.payout_service.security.Scopes).PAYOUTS_AUDIT)")
     public PayoutView get(@PathVariable String payoutId, Authentication authentication) {
         UUID id = PayoutQueries.parseId(payoutId);
         return operator(authentication)
@@ -99,7 +99,9 @@ public class PayoutController {
                 : queries.own(CurrentMerchantArgumentResolver.merchantId(authentication), id);
     }
 
+    /** Sees every merchant's payouts: an operator, or an auditor (who can read, and change nothing). */
     private static boolean operator(Authentication authentication) {
-        return authentication.getAuthorities().stream().map(GrantedAuthority::getAuthority).anyMatch(Scopes.PAYOUTS_OPERATE::equals);
+        return authentication.getAuthorities().stream().map(GrantedAuthority::getAuthority)
+                .anyMatch(authority -> Scopes.PAYOUTS_OPERATE.equals(authority) || Scopes.PAYOUTS_AUDIT.equals(authority));
     }
 }

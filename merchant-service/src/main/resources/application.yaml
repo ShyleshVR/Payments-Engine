@@ -46,10 +46,11 @@ payflow:
         scopes: [payments:audit, payouts:audit, reconciliation:audit]
       - client-id: incident-agent-operator
         # The same agent's second login, used only to carry out what a person approved: retrying a
-        # parked payment or payout saga. It cannot read the ledger, start a reconciliation or onboard
-        # anyone. Its secret is held by the agent's service alone. Local development default only.
+        # parked payment or payout saga, and running a failed day's reconciliation again (which
+        # reads and compares; it moves no money). It cannot read the ledger or onboard anyone. Its
+        # secret is held by the agent's service alone. Local development default only.
         client-secret: ${PAYFLOW_INCIDENT_AGENT_OPERATOR_CLIENT_SECRET:local-dev-incident-agent-operator-secret}
-        scopes: [payments:operate, payouts:operate]
+        scopes: [payments:operate, payouts:operate, reconciliation:admin]
 
 management:
   endpoint:

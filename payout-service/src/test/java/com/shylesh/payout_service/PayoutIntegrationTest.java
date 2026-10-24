@@ -508,6 +508,9 @@ class PayoutIntegrationTest {
         Reply someoneElses = call(as(get("/api/v1/payouts/po_" + payoutId), other, "payouts:read"));
         Reply malformed = call(as(get("/api/v1/payouts/" + payoutId), owner, "payouts:read"));
         Reply operator = call(as(get("/api/v1/payouts/po_" + payoutId), null, "payouts:operate"));
+        Reply auditor = call(as(get("/api/v1/payouts/po_" + payoutId), null, "payouts:audit"));
+        Reply auditorsList = call(as(get("/api/v1/payouts"), null, "payouts:audit"));
+        Reply auditorPays = call(as(post("/api/v1/payouts/batches"), null, "payouts:audit"));
         Reply ownList = call(as(get("/api/v1/payouts"), owner, "payouts:read"));
         Reply withoutScope = call(as(get("/api/v1/payouts/po_" + payoutId), owner, "payments:read"));
 
@@ -516,6 +519,11 @@ class PayoutIntegrationTest {
         assertThat(someoneElses.status()).isEqualTo(404);
         assertThat(malformed.status()).isEqualTo(400);
         assertThat(operator.status()).isEqualTo(200);
+        // an auditor (the incident agent's read-only login) reads everyone's payouts and changes nothing
+        assertThat(auditor.status()).isEqualTo(200);
+        assertThat(auditorsList.status()).isEqualTo(200);
+        assertThat(auditorsList.body().findValuesAsText("payoutId")).contains("po_" + payoutId);
+        assertThat(auditorPays.status()).isEqualTo(403);
         assertThat(ownList.body()).hasSize(1);
         assertThat(withoutScope.status()).isEqualTo(403);
     }
