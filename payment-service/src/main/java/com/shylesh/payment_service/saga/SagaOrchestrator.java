@@ -14,7 +14,6 @@ import com.shylesh.payment_service.processor.ProcessorResponse;
 import com.shylesh.payment_service.repository.PaymentRepository;
 
 import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
@@ -78,10 +77,6 @@ public class SagaOrchestrator {
         this.transactionTemplate = transactionTemplate;
         this.properties = properties;
         this.meterRegistry = meterRegistry;
-
-        Gauge.builder("sagas.requires_attention", sagaRepository, r -> r.countByState(SagaState.REQUIRES_ATTENTION))
-                .description("Sagas parked for an operator")
-                .register(meterRegistry);
     }
 
     // ---------------------------------------------------------------- starting

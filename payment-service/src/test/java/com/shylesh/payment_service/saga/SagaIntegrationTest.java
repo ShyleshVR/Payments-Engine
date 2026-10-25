@@ -116,6 +116,12 @@ class SagaIntegrationTest {
     @Autowired
     private io.micrometer.core.instrument.MeterRegistry meterRegistry;
 
+    @Autowired
+    private SagaMetrics sagaMetrics;
+
+    @Autowired
+    private com.shylesh.payment_service.common.outbox.OutboxMetrics outboxMetrics;
+
     private final UUID merchantId = UUID.randomUUID();
 
     private StubLedger ledger() {
@@ -190,6 +196,8 @@ class SagaIntegrationTest {
         await().atMost(Duration.ofSeconds(10)).until(() -> saga(paymentId, SagaType.PAYMENT).getState() == SagaState.SETTLING);
 
         assertThat(paymentService.lookupPayments(List.of(paymentId)).getFirst().sagaActive()).isTrue();
+        sagaMetrics.refresh();
+        outboxMetrics.refresh();
         await().atMost(Duration.ofSeconds(5)).until(() ->
                 meterRegistry.get("sagas.oldest.step.age").tag("type", "PAYMENT").gauge().value() >= 1);
         assertThat(meterRegistry.get("outbox.pending").gauge().value()).isGreaterThanOrEqualTo(0);

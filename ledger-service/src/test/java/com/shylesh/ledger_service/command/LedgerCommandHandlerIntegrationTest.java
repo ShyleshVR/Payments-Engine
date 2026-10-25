@@ -74,6 +74,9 @@ class LedgerCommandHandlerIntegrationTest {
     @Autowired
     private io.micrometer.core.instrument.MeterRegistry meterRegistry;
 
+    @Autowired
+    private com.shylesh.ledger_service.outbox.OutboxMetrics outboxMetrics;
+
     private static LedgerCommand command(LedgerCommandType type, UUID sagaId, UUID paymentId, UUID merchantId, String amount) {
         return new LedgerCommand(UUID.randomUUID(), type.name(), sagaId, paymentId, merchantId, new BigDecimal(amount), "USD");
     }
@@ -121,6 +124,7 @@ class LedgerCommandHandlerIntegrationTest {
         handler.handle(command(LedgerCommandType.SETTLE_PAYMENT, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "1.00"));
 
         // the relay polls hourly in this test, so the reply is still waiting
+        outboxMetrics.refresh();
         assertThat(meterRegistry.get("outbox.pending").gauge().value()).isGreaterThanOrEqualTo(1);
         assertThat(meterRegistry.get("outbox.oldest.pending.age").gauge().value()).isGreaterThanOrEqualTo(0);
         assertThat(meterRegistry.get("outbox.failed").gauge().value()).isEqualTo(0);

@@ -73,8 +73,9 @@ groups:
     rules:
       # kafka-exporter's scrape fails as soon as it can't reach the broker, so its target going down
       # is the Kafka-down signal (there is no broker exporter). Outboxes keep accepting messages.
+      # absent(): with no exporter pod at all there is no `up` series to be 0, and nothing would fire.
       - alert: KafkaUnreachable
-        expr: max by (job) (up{job="kafka-exporter"}) == 0
+        expr: max by (job) (up{job="kafka-exporter"}) == 0 or absent(up{job="kafka-exporter"})
         for: 2m
         labels:
           severity: critical

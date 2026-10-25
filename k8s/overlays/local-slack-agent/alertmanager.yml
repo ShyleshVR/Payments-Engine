@@ -35,8 +35,10 @@ receivers:
         text: '{{ range .Alerts }}• {{ .Annotations.summary }} — runbook: {{ .Annotations.runbook }}{{ "\n" }}{{ end }}'
   - name: incident-agent
     webhook_configs:
-      # the agent on this machine (Docker Desktop's name for the host); it may listen on 127.0.0.1
-      - url: http://host.docker.internal:8092/alerts
+      # the agent's Service in its own namespace: its pod (deployed with the agent's
+      # scripts/k8s-deploy.sh up), or, for development, a name for this machine where
+      # `payflow-agent serve` runs (k8s-deploy.sh host)
+      - url: http://incident-agent.payflow-agent.svc.cluster.local:8092/alerts
         send_resolved: true
         http_config:
           authorization:

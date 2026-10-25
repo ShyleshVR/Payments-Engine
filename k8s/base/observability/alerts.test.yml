@@ -190,6 +190,24 @@ tests:
         alertname: InstanceDown
         exp_alerts: []
 
+  - name: kafka exporter gone
+    interval: 1m
+    input_series:
+      # kafka-exporter scaled to zero: Prometheus has no target for it, so no `up` series at all
+      - series: 'up{job="payment-service", pod="p-1"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: KafkaUnreachable
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: KafkaUnreachable
+        exp_alerts:
+          - exp_labels: { severity: critical, job: kafka-exporter }
+            exp_annotations:
+              summary: "Kafka is unreachable (kafka-exporter cannot read the broker)"
+              runbook: docs/DEPLOYMENT.md#runbooks
+
   - name: gateway errors
     interval: 1m
     input_series:

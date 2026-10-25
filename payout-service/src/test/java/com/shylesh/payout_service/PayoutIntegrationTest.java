@@ -151,6 +151,9 @@ class PayoutIntegrationTest {
     @Autowired
     private MeterRegistry meterRegistry;
 
+    @Autowired
+    private com.shylesh.payout_service.saga.SagaMetrics sagaMetrics;
+
     private StubLedger ledger() {
         if (ledger == null) {
             ledger = new StubLedger(kafka.getBootstrapServers());
@@ -358,6 +361,7 @@ class PayoutIntegrationTest {
         awaitSaga(payoutId, SagaState.REQUIRES_ATTENTION);
         assertThat(saga(payoutId).getStuckState()).isEqualTo(SagaState.SUBMITTING);
         assertThat(ledger().commandTypesFor(payoutId)).containsExactly("HOLD_PAYOUT");
+        sagaMetrics.refresh();
         assertThat(meterRegistry.get("sagas.requires_attention").gauge().value()).isGreaterThanOrEqualTo(1.0);
 
         stub.bankDown = false;

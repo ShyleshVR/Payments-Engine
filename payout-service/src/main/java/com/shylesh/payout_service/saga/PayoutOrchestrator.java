@@ -12,7 +12,6 @@ import com.shylesh.payout_service.payout.PayoutTrigger;
 import com.shylesh.payout_service.tracing.TraceContext;
 
 import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
@@ -74,9 +73,6 @@ public class PayoutOrchestrator {
         this.properties = properties;
         this.meterRegistry = meterRegistry;
 
-        Gauge.builder("sagas.requires_attention", sagaRepository, r -> r.countByState(SagaState.REQUIRES_ATTENTION))
-                .description("Payout sagas parked for an operator")
-                .register(meterRegistry);
         // Registered at 0 up front: a series that first appears at 1 makes increase() miss that
         // first payout, and the PayoutsFailing alert would never see a single failure.
         for (PayoutStatus status : List.of(PayoutStatus.IN_TRANSIT, PayoutStatus.PAID, PayoutStatus.FAILED, PayoutStatus.RETURNED)) {

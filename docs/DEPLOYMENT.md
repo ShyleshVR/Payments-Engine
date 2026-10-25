@@ -368,10 +368,13 @@ down, it suppresses that service's warnings. Resolved notifications are sent too
 - **Incident agent (optional).** `scripts/generate-local-secrets.sh --agent` creates
   `k8s/overlays/local/secrets/incident-agent-token`; `scripts/k8s-up.sh` then deploys the
   `local-agent` overlay (`local-slack-agent` with Slack as well), and every alert also goes to the
-  incident agent ([payflow-incident-agent](https://github.com/ShyleshVR/payflow-incident-agent),
-  run on this machine with `payflow-agent serve`), which investigates it with its own model. The
-  token is sent as a bearer token; the agent has the same value in its `.env`. Alertmanager
-  reaches it at `host.docker.internal:8092`, even while the agent listens only on 127.0.0.1.
+  incident agent ([payflow-incident-agent](https://github.com/ShyleshVR/payflow-incident-agent)),
+  which investigates it with its own model. The token is sent as a bearer token; the agent has the
+  same value in its `.env`. Alertmanager sends to `incident-agent.payflow-agent.svc.cluster.local:8092`:
+  the agent's own pod, deployed into the `payflow-agent` namespace by its `scripts/k8s-deploy.sh up`
+  (with a read-only Role in this namespace for its MCP server), or, for development, a name for
+  this machine where `payflow-agent serve` runs (`k8s-deploy.sh host`). Its model stays on this
+  machine's GPU.
 - **Tested rules.** `alerts.test.yml` checks every rule with `promtool test rules`: each fires
   when it should, after its `for` duration, with the right labels and summary, and stays silent
   otherwise. CI runs it, together with `amtool check-config` on the Alertmanager configuration.
@@ -385,7 +388,7 @@ down, it suppresses that service's warnings. Resolved notifications are sent too
 | `KafkaConsumerLag` | warning | A consumer group is over 500 messages behind on a topic (5m) |
 | `DeadLettersArriving` | warning | New messages on any `.DLT` topic |
 | `ProcessorCircuitOpen` | critical | The card processor circuit breaker is open (1m) |
-| `KafkaUnreachable` | critical | kafka-exporter can't read the broker (2m) |
+| `KafkaUnreachable` | critical | kafka-exporter can't read the broker, or has no pod at all (2m) |
 | `ServiceDown` | critical | A service has no healthy instance, including when it has no pods (2m) |
 | `InstanceDown` | warning | One replica is down (2m); not kafka-exporter, which is `KafkaUnreachable` |
 | `GatewayErrorRate` | warning | Over 5% of gateway responses are 5xx (5m) |
@@ -393,10 +396,17 @@ down, it suppresses that service's warnings. Resolved notifications are sent too
 | `PayoutBatchNotRun`, `PayoutsFailing` | warning | See [PAYOUTS.md](PAYOUTS.md#metrics-and-alerts); parked or stuck payout sagas raise the saga alerts above (application payout-service) |
 
 Two metrics sources were added for these alerts:
-- **Backlog gauges** in payment-service and the ledger: `outbox_pending`, `outbox_failed`,
-  `outbox_oldest_pending_age_seconds`, and in payment-service also
-  `sagas_oldest_step_age_seconds`. They are read from the database, so every replica reports the
-  same values.
+- **Backlog gauges** in payment-service, payout-service and the ledger: `outbox_pending`,
+  `outbox_failed`, `outbox_oldest_pending_age_seconds`, and in the two saga services also
+  `sagas_oldest_step_age_seconds` and `sagas_requires_attention`. They are read from the
+  database, so every replica reports the same values, but in the background (every 10 seconds,
+  `payflow.metrics.refresh-interval`), never during a scrape: with the database gone, a scrape
+  still answers, and these values are unknown (NaN) until the database answers again, so no alert
+  fires on numbers nobody could read. (Last values kept instead made a reply in flight when the
+  database went away age into a false `OutboxBacklog`.) (They were read at
+  scrape time until 2026-10-24; with its database login locked, the ledger's metrics endpoint
+  then failed, Prometheus counted the running ledger as down, and `ServiceDown` and
+  `InstanceDown` fired. Found by the incident agent's evals.)
 - **kafka-exporter**, which reads consumer lag from the broker itself, so lag shows even when
   every consumer is dead.
 
@@ -435,7 +445,9 @@ These runs exposed four problems, all fixed:
   deleted, and the runbook now covers the case.
 - **No Kafka alert.** With Kafka down, the only signal was a generic warning that kafka-exporter
   was down. `KafkaUnreachable` now names the actual failure, and InstanceDown leaves the
-  exporter out.
+  exporter out. With kafka-exporter scaled to zero, Prometheus has no target and so no `up`
+  series to be 0, and the rule stayed silent; it now has `or absent(up{job="kafka-exporter"})`
+  like `ServiceDown`, and a promtool test for it (found by the incident agent's evals).
 - **One reconciliation alert bug** (see RECONCILIATION.md).
 
 ### Runbooks
